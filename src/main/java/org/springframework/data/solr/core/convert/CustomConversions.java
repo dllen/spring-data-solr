@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,8 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.WeakHashMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 import org.springframework.core.GenericTypeResolver;
 import org.springframework.core.convert.converter.Converter;
@@ -31,8 +32,8 @@ import org.springframework.data.convert.ReadingConverter;
 import org.springframework.data.convert.WritingConverter;
 import org.springframework.data.mapping.model.SimpleTypeHolder;
 import org.springframework.data.solr.VersionUtil;
-import org.springframework.data.solr.core.geo.GeoConverters.GeoLocationToStringConverter;
-import org.springframework.data.solr.core.geo.GeoConverters.StringToGeoLocationConverter;
+import org.springframework.data.solr.core.geo.GeoConverters.Point3DToStringConverter;
+import org.springframework.data.solr.core.geo.GeoConverters.StringToPointConverter;
 import org.springframework.data.solr.core.mapping.SolrSimpleTypes;
 import org.springframework.util.Assert;
 
@@ -51,7 +52,7 @@ public class CustomConversions {
 	private final Set<ConvertiblePair> writingPairs;
 	private SimpleTypeHolder simpleTypeHolder;
 
-	private WeakHashMap<ConvertiblePair, Class<?>> cache = new WeakHashMap<ConvertiblePair, Class<?>>();
+	private ConcurrentMap<ConvertiblePair, Class<?>> cache = new ConcurrentHashMap<ConvertiblePair, Class<?>>(36, 0.9f, 1);
 
 	/**
 	 * Create new instance
@@ -74,8 +75,8 @@ public class CustomConversions {
 
 		this.simpleTypeHolder = new SimpleTypeHolder(customSimpleTypes, SolrSimpleTypes.HOLDER);
 
-		this.converters.add(StringToGeoLocationConverter.INSTANCE);
-		this.converters.add(GeoLocationToStringConverter.INSTANCE);
+		this.converters.add(StringToPointConverter.INSTANCE);
+		this.converters.add(Point3DToStringConverter.INSTANCE);
 		this.converters.add(new SolrjConverters.UpdateToSolrInputDocumentConverter());
 
 		// Register Joda-Time converters only if Joda-Time was found in the classpath.
@@ -95,7 +96,6 @@ public class CustomConversions {
 	 * Register custom converters within given {@link GenericConversionService}
 	 * 
 	 * @param conversionService must not be null
-	 * 
 	 */
 	public void registerConvertersIn(GenericConversionService conversionService) {
 		Assert.notNull(conversionService);
@@ -152,20 +152,21 @@ public class CustomConversions {
 				: Any.class);
 
 		if (cache.containsKey(expectedTypePair)) {
-			return cache.get(expectedTypePair);
+			Class<?> cachedTargetType = cache.get(expectedTypePair);
+			return cachedTargetType != Any.class ? cachedTargetType : null;
 		}
 
 		for (ConvertiblePair typePair : pairs) {
 			if (typePair.getSourceType().isAssignableFrom(sourceType)) {
 				Class<?> targetType = typePair.getTargetType();
 				if (expectedTargetType == null || targetType.isAssignableFrom(expectedTargetType)) {
-					cache.put(expectedTypePair, targetType);
+					cache.putIfAbsent(expectedTypePair, targetType);
 					return targetType;
 				}
 			}
 		}
 
-		cache.put(expectedTypePair, null);
+		cache.putIfAbsent(expectedTypePair, Any.class);
 		return null;
 	}
 
@@ -236,7 +237,6 @@ public class CustomConversions {
 	 * ConvertibleContext is a holder for {@link ConvertiblePair} and read/write information
 	 * 
 	 * @author Christoph Strobl
-	 * 
 	 */
 	static class ConvertibleContext {
 
@@ -288,7 +288,6 @@ public class CustomConversions {
 	 * Simple placeholder as {@link ConvertiblePair} will not allow null values
 	 * 
 	 * @author Christoph Strobl
-	 * 
 	 */
 	private static class Any {
 

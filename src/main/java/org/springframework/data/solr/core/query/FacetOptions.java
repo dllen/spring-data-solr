@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2015 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,6 @@ import java.util.List;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.collections.Predicate;
 import org.apache.solr.common.params.FacetParams;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
@@ -33,6 +32,7 @@ import org.springframework.util.StringUtils;
  * Set of options that can be set on a {@link FacetQuery}
  * 
  * @author Christoph Strobl
+ * @author Francisco Spaeth
  */
 public class FacetOptions {
 
@@ -45,6 +45,7 @@ public class FacetOptions {
 	}
 
 	private List<Field> facetOnFields = new ArrayList<Field>(1);
+	private List<PivotField> facetOnPivotFields = new ArrayList<PivotField>(0);
 	private List<SolrDataQuery> facetQueries = new ArrayList<SolrDataQuery>(0);
 	private int facetMinCount = DEFAULT_FACET_MIN_COUNT;
 	private int facetLimit = DEFAULT_FACET_LIMIT;
@@ -52,8 +53,7 @@ public class FacetOptions {
 	private FacetSort facetSort = DEFAULT_FACET_SORT;
 	private Pageable pageable;
 
-	public FacetOptions() {
-	}
+	public FacetOptions() {}
 
 	/**
 	 * Creates new instance faceting on fields with given name
@@ -121,6 +121,39 @@ public class FacetOptions {
 	}
 
 	/**
+	 * Add pivot facet on given {@link Field}s.
+	 * 
+	 * @param fields
+	 * @return
+	 */
+	public final FacetOptions addFacetOnPivot(Field... fields) {
+		Assert.notNull(fields, "Pivot Facets must not be null.");
+
+		for (Field field : fields) {
+			Assert.notNull(field, "Cannot facet on null field.");
+			Assert.hasText(field.getName(), "Cannot facet on field with null/empty fieldname.");
+		}
+
+		List<Field> list = Arrays.asList(fields);
+		this.facetOnPivotFields.add(new SimplePivotField(list));
+		return this;
+	}
+
+	/**
+	 * @param fieldName
+	 * @return
+	 */
+	public final FacetOptions addFacetOnPivot(String... fieldnames) {
+		Assert.state(fieldnames.length > 1, "2 or more fields required for pivot facets");
+		for (String fieldname : fieldnames) {
+			Assert.hasText(fieldname, "Fieldnames must not contain null/empty values");
+		}
+
+		this.facetOnPivotFields.add(new SimplePivotField(fieldnames));
+		return this;
+	}
+
+	/**
 	 * Append all fieldnames for faceting
 	 * 
 	 * @param fieldnames
@@ -175,7 +208,7 @@ public class FacetOptions {
 	 * @return
 	 */
 	public FacetOptions setFacetLimit(int rowsToReturn) {
-		this.facetLimit = Math.max(1, rowsToReturn);
+		this.facetLimit = rowsToReturn;
 		return this;
 	}
 
@@ -199,6 +232,15 @@ public class FacetOptions {
 	 */
 	public final List<Field> getFacetOnFields() {
 		return Collections.unmodifiableList(this.facetOnFields);
+	}
+
+	/**
+	 * Get the list of pivot Fields to face on
+	 * 
+	 * @return
+	 */
+	public final List<PivotField> getFacetOnPivots() {
+		return Collections.unmodifiableList(facetOnPivotFields);
 	}
 
 	/**
@@ -234,7 +276,7 @@ public class FacetOptions {
 	 * @return
 	 */
 	public Pageable getPageable() {
-		return this.pageable != null ? this.pageable : new PageRequest(0, facetLimit);
+		return this.pageable != null ? this.pageable : new SolrPageRequest(0, facetLimit);
 	}
 
 	/**
@@ -272,7 +314,7 @@ public class FacetOptions {
 	 * @return true if at least one facet field set
 	 */
 	public boolean hasFields() {
-		return !this.facetOnFields.isEmpty();
+		return !this.facetOnFields.isEmpty() || !this.facetOnPivotFields.isEmpty();
 	}
 
 	/**
@@ -283,10 +325,17 @@ public class FacetOptions {
 	}
 
 	/**
-	 * @return true if either {@code facet.field} or {@code facet.query} set
+	 * @return true if pivot facets apply fo faceting
+	 */
+	public boolean hasPivotFields() {
+		return !facetOnPivotFields.isEmpty();
+	}
+
+	/**
+	 * @return true if any {@code facet.field} or {@code facet.query} set
 	 */
 	public boolean hasFacets() {
-		return hasFields() || hasFacetQueries();
+		return hasFields() || hasFacetQueries() || hasPivotFields();
 	}
 
 	/**

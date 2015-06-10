@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,15 +15,32 @@
  */
 package org.springframework.data.solr.server.support;
 
+import static org.hamcrest.core.IsCollectionContaining.*;
+import static org.hamcrest.core.IsEqual.*;
+import static org.hamcrest.text.IsEmptyString.*;
+
 import java.net.MalformedURLException;
 import java.util.Map;
 
+import org.apache.http.auth.AuthScope;
+import org.apache.http.auth.UsernamePasswordCredentials;
+import org.apache.http.client.CredentialsProvider;
+import org.apache.http.impl.client.AbstractHttpClient;
+import org.apache.http.impl.client.BasicCredentialsProvider;
+import org.apache.http.impl.client.DefaultHttpClient;
+import org.apache.http.params.BasicHttpParams;
+import org.apache.http.params.HttpParams;
+import org.apache.solr.client.solrj.embedded.EmbeddedSolrServer;
 import org.apache.solr.client.solrj.impl.CloudSolrServer;
 import org.apache.solr.client.solrj.impl.HttpSolrServer;
 import org.apache.solr.client.solrj.impl.LBHttpSolrServer;
-import org.hamcrest.core.IsCollectionContaining;
+import org.apache.solr.core.CoreContainer;
+import org.hamcrest.core.IsEqual;
+import org.hamcrest.core.IsSame;
 import org.junit.Assert;
 import org.junit.Test;
+import org.mockito.Mockito;
+import org.springframework.data.solr.core.mapping.SolrDocument;
 import org.springframework.test.util.ReflectionTestUtils;
 
 /**
@@ -96,7 +113,7 @@ public class SolrServerUtilTests {
 		LBHttpSolrServer clone = SolrServerUtils.clone(lbSolrServer, CORE_NAME);
 
 		Map<String, ?> aliveServers = (Map<String, ?>) ReflectionTestUtils.getField(clone, FIELD_ALIVE_SERVERS);
-		Assert.assertThat(aliveServers.keySet(), IsCollectionContaining.hasItems(CORE_URL, ALTERNATE_CORE_URL));
+		Assert.assertThat(aliveServers.keySet(), hasItems(CORE_URL, ALTERNATE_CORE_URL));
 
 		assertLBHttpSolrServerProperties(lbSolrServer, clone);
 	}
@@ -118,7 +135,7 @@ public class SolrServerUtilTests {
 
 	@Test
 	@SuppressWarnings("unchecked")
-	public void testClonesCloudSolrServerForCoreCorrectly() throws MalformedURLException {
+	public void testClonesCloudSolrServerForCoreCorrectlyWhenCoreNameIsNotEmpty() throws MalformedURLException {
 		LBHttpSolrServer lbSolrServer = new LBHttpSolrServer(BASE_URL, ALTERNATE_BASE_URL);
 		CloudSolrServer cloudServer = new CloudSolrServer(ZOO_KEEPER_URL, lbSolrServer);
 
@@ -127,9 +144,23 @@ public class SolrServerUtilTests {
 
 		LBHttpSolrServer lbClone = clone.getLbServer();
 		Map<String, ?> aliveServers = (Map<String, ?>) ReflectionTestUtils.getField(lbClone, FIELD_ALIVE_SERVERS);
-		Assert.assertThat(aliveServers.keySet(), IsCollectionContaining.hasItems(CORE_URL, ALTERNATE_CORE_URL));
+		Assert.assertThat(aliveServers.keySet(), hasItems(CORE_URL, ALTERNATE_CORE_URL));
 
 		assertLBHttpSolrServerProperties(lbSolrServer, lbClone);
+		Assert.assertThat(clone.getDefaultCollection(), equalTo(CORE_NAME));
+	}
+
+	@Test
+	public void testClonesCloudSolrServerForCoreCorrectlyWhenNoLBHttpServerPresent() throws MalformedURLException {
+		CloudSolrServer cloudServer = new CloudSolrServer(ZOO_KEEPER_URL);
+
+		CloudSolrServer clone = SolrServerUtils.clone(cloudServer, CORE_NAME);
+		Assert.assertEquals(ZOO_KEEPER_URL, ReflectionTestUtils.getField(clone, FIELD_ZOO_KEEPER));
+
+		LBHttpSolrServer lbClone = clone.getLbServer();
+
+		assertLBHttpSolrServerProperties(cloudServer.getLbServer(), lbClone);
+		Assert.assertThat(clone.getDefaultCollection(), equalTo(CORE_NAME));
 	}
 
 	@Test
@@ -157,6 +188,105 @@ public class SolrServerUtilTests {
 		Assert.assertEquals(BASE_URL, SolrServerUtils.appendCoreToBaseUrl(null, null));
 	}
 
+	@Test
+	public void testResolveSolrCoreNameShouldReturnEmptyStringWhenNoAnnotationPresent() {
+		Assert.assertThat(SolrServerUtils.resolveSolrCoreName(ClassWithoutSolrDocumentAnnotation.class), isEmptyString());
+	}
+
+	@Test
+	public void testResolveSolrCoreNameShouldReturnEmptyStringWhenAnnotationHasNoValue() {
+		Assert.assertThat(SolrServerUtils.resolveSolrCoreName(ClassWithEmptySolrDocumentAnnotation.class), isEmptyString());
+	}
+
+	@Test
+	public void testResolveSolrCoreNameShouldReturnAnnotationValueWhenPresent() {
+		Assert.assertThat(SolrServerUtils.resolveSolrCoreName(ClassWithSolrDocumentAnnotation.class), equalTo("core1"));
+	}
+
+	/**
+	 * @see DATASOLR-189
+	 */
+	@Test
+	public void cloningLBHttpSolrServerShouldCopyHttpParamsCorrectly() throws MalformedURLException {
+
+		HttpParams params = new BasicHttpParams();
+		params.setParameter("foo", "bar");
+		DefaultHttpClient client = new DefaultHttpClient(params);
+
+		LBHttpSolrServer lbSolrServer = new LBHttpSolrServer(client, BASE_URL, ALTERNATE_BASE_URL);
+
+		LBHttpSolrServer cloned = SolrServerUtils.clone(lbSolrServer, CORE_NAME);
+		Assert.assertThat(cloned.getHttpClient().getParams(), IsEqual.equalTo(params));
+
+	}
+
+	/**
+	 * @see DATASOLR-189
+	 */
+	@Test
+	public void cloningLBHttpSolrServerShouldCopyCredentialsProviderCorrectly() {
+
+		BasicCredentialsProvider credentialsProvider = new BasicCredentialsProvider();
+		credentialsProvider.setCredentials(AuthScope.ANY, new UsernamePasswordCredentials("foo", "bar"));
+
+		DefaultHttpClient client = new DefaultHttpClient();
+		client.setCredentialsProvider(credentialsProvider);
+
+		LBHttpSolrServer lbSolrServer = new LBHttpSolrServer(client, BASE_URL, ALTERNATE_BASE_URL);
+
+		LBHttpSolrServer cloned = SolrServerUtils.clone(lbSolrServer, CORE_NAME);
+		Assert.assertThat(((AbstractHttpClient) cloned.getHttpClient()).getCredentialsProvider(),
+				IsEqual.<CredentialsProvider> equalTo(credentialsProvider));
+	}
+
+	/**
+	 * @see DATASOLR-189
+	 */
+	@Test
+	public void cloningHttpSolrServerShouldCopyHttpParamsCorrectly() {
+
+		HttpParams params = new BasicHttpParams();
+		params.setParameter("foo", "bar");
+		DefaultHttpClient client = new DefaultHttpClient(params);
+
+		HttpSolrServer solrServer = new HttpSolrServer(BASE_URL, client);
+		HttpSolrServer cloned = SolrServerUtils.clone(solrServer);
+
+		Assert.assertThat(cloned.getHttpClient().getParams(), IsEqual.equalTo(params));
+	}
+
+	/**
+	 * @see DATASOLR-189
+	 */
+	@Test
+	public void cloningHttpSolrServerShouldCopyCredentialsProviderCorrectly() {
+
+		BasicCredentialsProvider credentialsProvider = new BasicCredentialsProvider();
+		credentialsProvider.setCredentials(AuthScope.ANY, new UsernamePasswordCredentials("foo", "bar"));
+
+		DefaultHttpClient client = new DefaultHttpClient();
+		client.setCredentialsProvider(credentialsProvider);
+
+		HttpSolrServer solrServer = new HttpSolrServer(BASE_URL, client);
+		HttpSolrServer cloned = SolrServerUtils.clone(solrServer);
+
+		Assert.assertThat(((AbstractHttpClient) cloned.getHttpClient()).getCredentialsProvider(),
+				IsEqual.<CredentialsProvider> equalTo(credentialsProvider));
+	}
+
+	/**
+	 * @see DATASOLR-203
+	 */
+	@Test
+	public void cloningEmbeddedSolrServerShouldReuseCoreContainer() {
+
+		CoreContainer coreContainer = Mockito.mock(CoreContainer.class);
+		EmbeddedSolrServer solrServer = new EmbeddedSolrServer(coreContainer, null);
+
+		EmbeddedSolrServer clone = SolrServerUtils.clone(solrServer, "core1");
+		Assert.assertThat(clone.getCoreContainer(), IsSame.sameInstance(coreContainer));
+	}
+
 	private void assertHttpSolrServerProperties(HttpSolrServer httpSolrServer, HttpSolrServer clone) {
 		Assert.assertEquals(ReflectionTestUtils.getField(httpSolrServer, "followRedirects"),
 				ReflectionTestUtils.getField(clone, "followRedirects"));
@@ -169,6 +299,20 @@ public class SolrServerUtilTests {
 	private void assertLBHttpSolrServerProperties(LBHttpSolrServer lbSolrServer, LBHttpSolrServer clone) {
 		Assert.assertEquals(ReflectionTestUtils.getField(lbSolrServer, "interval"),
 				ReflectionTestUtils.getField(clone, "interval"));
+	}
+
+	private static class ClassWithoutSolrDocumentAnnotation {
+
+	}
+
+	@SolrDocument
+	private static class ClassWithEmptySolrDocumentAnnotation {
+
+	}
+
+	@SolrDocument(solrCoreName = "core1")
+	private static class ClassWithSolrDocumentAnnotation {
+
 	}
 
 }

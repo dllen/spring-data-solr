@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,19 +15,18 @@
  */
 package org.springframework.data.solr.core.query;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.dao.InvalidDataAccessApiUsageException;
-import org.springframework.data.solr.core.geo.BoundingBox;
-import org.springframework.data.solr.core.geo.Distance;
-import org.springframework.data.solr.core.geo.GeoLocation;
+import org.springframework.data.geo.Box;
+import org.springframework.data.geo.Circle;
+import org.springframework.data.geo.Distance;
+import org.springframework.data.geo.Point;
 import org.springframework.util.Assert;
 
 /**
@@ -36,24 +35,27 @@ import org.springframework.util.Assert;
  * 
  * @author Christoph Strobl
  * @author Philipp Jardas
+ * @author Francisco Spaeth
  */
-public class Criteria {
+public class Criteria extends Node {
 
 	public static final String WILDCARD = "*";
 	public static final String CRITERIA_VALUE_SEPERATOR = " ";
 
-	private static final String OR_OPERATOR = " OR ";
-	private static final String AND_OPERATOR = " AND ";
-
 	private Field field;
 	private float boost = Float.NaN;
-	private boolean negating = false;
 
-	private List<Criteria> criteriaChain = new ArrayList<Criteria>(1);
+	private Set<Predicate> predicates = new LinkedHashSet<Predicate>();
 
-	private Set<CriteriaEntry> criteria = new LinkedHashSet<CriteriaEntry>();
+	public Criteria() {}
 
-	public Criteria() {
+	/**
+	 * @param function
+	 * @since 1.1
+	 */
+	public Criteria(Function function) {
+		Assert.notNull(function, "Cannot create Critiera for 'null' function.");
+		function(function);
 	}
 
 	/**
@@ -74,21 +76,6 @@ public class Criteria {
 		Assert.notNull(field, "Field for criteria must not be null");
 		Assert.hasText(field.getName(), "Field.name for criteria must not be null/empty");
 
-		this.criteriaChain.add(this);
-		this.field = field;
-	}
-
-	protected Criteria(List<Criteria> criteriaChain, String fieldname) {
-		this(criteriaChain, new SimpleField(fieldname));
-	}
-
-	protected Criteria(List<Criteria> criteriaChain, Field field) {
-		Assert.notNull(criteriaChain, "CriteriaChain must not be null");
-		Assert.notNull(field, "Field for criteria must not be null");
-		Assert.hasText(field.getName(), "Field.name for criteria must not be null/empty");
-
-		this.criteriaChain.addAll(criteriaChain);
-		this.criteriaChain.add(this);
 		this.field = field;
 	}
 
@@ -103,6 +90,17 @@ public class Criteria {
 	}
 
 	/**
+	 * Static factory method to create a new Criteria for function
+	 * 
+	 * @param function must not be null
+	 * @return
+	 * @since 1.1
+	 */
+	public static Criteria where(Function function) {
+		return new Criteria(function);
+	}
+
+	/**
 	 * Static factory method to create a new Criteria for provided field
 	 * 
 	 * @param field must not be null
@@ -113,83 +111,7 @@ public class Criteria {
 	}
 
 	/**
-	 * Chain using {@code AND}
-	 * 
-	 * @param field must not be null
-	 * @return
-	 */
-	public Criteria and(Field field) {
-		return new Criteria(this.criteriaChain, field);
-	}
-
-	/**
-	 * Chain using {@code AND}
-	 * 
-	 * @param fieldname must not be null
-	 * @return
-	 */
-	public Criteria and(String fieldname) {
-		return new Criteria(this.criteriaChain, fieldname);
-	}
-
-	/**
-	 * Chain using {@code AND}
-	 * 
-	 * @param criteria
-	 * @return
-	 */
-	public Criteria and(Criteria criteria) {
-		this.criteriaChain.add(criteria);
-		return this;
-	}
-
-	/**
-	 * Chain using {@code AND}
-	 * 
-	 * @param criterias
-	 * @return
-	 */
-	public Criteria and(Criteria... criterias) {
-		this.criteriaChain.addAll(Arrays.asList(criterias));
-		return this;
-	}
-
-	/**
-	 * Chain using {@code OR}
-	 * 
-	 * @param field
-	 * @return
-	 */
-	public Criteria or(Field field) {
-		return new OrCriteria(this.criteriaChain, field);
-	}
-
-	/**
-	 * Chain using {@code OR}
-	 * 
-	 * @param criteria
-	 * @return
-	 */
-	public Criteria or(Criteria criteria) {
-		Assert.notNull(criteria, "Cannot chain 'null' criteria.");
-
-		Criteria orConnectedCritiera = new OrCriteria(this.criteriaChain, criteria.getField());
-		orConnectedCritiera.criteria.addAll(criteria.criteria);
-		return orConnectedCritiera;
-	}
-
-	/**
-	 * Chain using {@code OR}
-	 * 
-	 * @param fieldname
-	 * @return
-	 */
-	public Criteria or(String fieldname) {
-		return or(new SimpleField(fieldname));
-	}
-
-	/**
-	 * Crates new {@link CriteriaEntry} without any wildcards. Strings with blanks will be escaped
+	 * Crates new {@link Predicate} without any wildcards. Strings with blanks will be escaped
 	 * {@code "string\ with\ blank"}
 	 * 
 	 * @param o
@@ -199,12 +121,12 @@ public class Criteria {
 		if (o == null) {
 			return isNull();
 		}
-		criteria.add(new CriteriaEntry(OperationKey.EQUALS, o));
+		predicates.add(new Predicate(OperationKey.EQUALS, o));
 		return this;
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} without any wildcards for each entry
+	 * Crates new {@link Predicate} without any wildcards for each entry
 	 * 
 	 * @param values
 	 * @return
@@ -214,7 +136,7 @@ public class Criteria {
 	}
 
 	/**
-	 * Creates new {@link CriteriaEntry} without any wildcards for each entry
+	 * Creates new {@link Predicate} without any wildcards for each entry
 	 * 
 	 * @param values
 	 * @return
@@ -224,7 +146,7 @@ public class Criteria {
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} for {@code null} values
+	 * Crates new {@link Predicate} for {@code null} values
 	 * 
 	 * @return
 	 */
@@ -233,7 +155,7 @@ public class Criteria {
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} for {@code !null} values
+	 * Crates new {@link Predicate} for {@code !null} values
 	 * 
 	 * @return
 	 */
@@ -242,7 +164,7 @@ public class Criteria {
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} with leading and trailing wildcards <br/>
+	 * Crates new {@link Predicate} with leading and trailing wildcards <br/>
 	 * <strong>NOTE: </strong>mind your schema as leading wildcards may not be supported and/or execution might be slow.
 	 * <strong>NOTE: </strong>Strings will not be automatically split on whitespace.
 	 * 
@@ -252,12 +174,13 @@ public class Criteria {
 	 */
 	public Criteria contains(String s) {
 		assertNoBlankInWildcardedQuery(s, true, true);
-		criteria.add(new CriteriaEntry(OperationKey.CONTAINS, s));
+		predicates.add(new Predicate(OperationKey.CONTAINS, s));
 		return this;
+
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} with leading and trailing wildcards for each entry<br/>
+	 * Crates new {@link Predicate} with leading and trailing wildcards for each entry<br/>
 	 * <strong>NOTE: </strong>mind your schema as leading wildcards may not be supported and/or execution might be slow.
 	 * 
 	 * @param values
@@ -270,7 +193,7 @@ public class Criteria {
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} with leading and trailing wildcards for each entry<br/>
+	 * Crates new {@link Predicate} with leading and trailing wildcards for each entry<br/>
 	 * <strong>NOTE: </strong>mind your schema as leading wildcards may not be supported and/or execution might be slow.
 	 * 
 	 * @param values
@@ -286,7 +209,7 @@ public class Criteria {
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} with trailing wildcard <br/>
+	 * Crates new {@link Predicate} with trailing wildcard <br/>
 	 * <strong>NOTE: </strong>Strings will not be automatically split on whitespace.
 	 * 
 	 * @param s
@@ -295,12 +218,13 @@ public class Criteria {
 	 */
 	public Criteria startsWith(String s) {
 		assertNoBlankInWildcardedQuery(s, false, true);
-		criteria.add(new CriteriaEntry(OperationKey.STARTS_WITH, s));
+		predicates.add(new Predicate(OperationKey.STARTS_WITH, s));
 		return this;
+
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} with trailing wildcard for each entry
+	 * Crates new {@link Predicate} with trailing wildcard for each entry
 	 * 
 	 * @param values
 	 * @return
@@ -312,7 +236,7 @@ public class Criteria {
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} with trailing wildcard for each entry
+	 * Crates new {@link Predicate} with trailing wildcard for each entry
 	 * 
 	 * @param values
 	 * @return
@@ -327,7 +251,7 @@ public class Criteria {
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} with leading wildcard <br />
+	 * Crates new {@link Predicate} with leading wildcard <br />
 	 * <strong>NOTE: </strong>mind your schema and execution times as leading wildcards may not be supported.
 	 * <strong>NOTE: </strong>Strings will not be automatically split on whitespace.
 	 * 
@@ -337,12 +261,12 @@ public class Criteria {
 	 */
 	public Criteria endsWith(String s) {
 		assertNoBlankInWildcardedQuery(s, true, false);
-		criteria.add(new CriteriaEntry(OperationKey.ENDS_WITH, s));
+		predicates.add(new Predicate(OperationKey.ENDS_WITH, s));
 		return this;
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} with leading wildcard for each entry<br />
+	 * Crates new {@link Predicate} with leading wildcard for each entry<br />
 	 * <strong>NOTE: </strong>mind your schema and execution times as leading wildcards may not be supported.
 	 * 
 	 * @param values
@@ -355,7 +279,7 @@ public class Criteria {
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} with leading wildcard for each entry<br />
+	 * Crates new {@link Predicate} with leading wildcard for each entry<br />
 	 * <strong>NOTE: </strong>mind your schema and execution times as leading wildcards may not be supported.
 	 * 
 	 * @param values
@@ -368,6 +292,7 @@ public class Criteria {
 			endsWith(value);
 		}
 		return this;
+
 	}
 
 	/**
@@ -376,12 +301,27 @@ public class Criteria {
 	 * @return
 	 */
 	public Criteria not() {
-		this.negating = true;
+		setNegating(true);
 		return this;
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} with trailing {@code ~}
+	 * Explicitly wrap {@link Criteria} inside not operation.
+	 * 
+	 * @since 1.4
+	 * @return
+	 */
+	public Criteria notOperator() {
+
+		Crotch c = new Crotch();
+		c.setNegating(true);
+		c.add(this);
+
+		return c;
+	}
+
+	/**
+	 * Crates new {@link Predicate} with trailing {@code ~}
 	 * 
 	 * @param s
 	 * @return
@@ -391,7 +331,7 @@ public class Criteria {
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} with trailing {@code ~} followed by levensteinDistance
+	 * Crates new {@link Predicate} with trailing {@code ~} followed by levensteinDistance
 	 * 
 	 * @param s
 	 * @param levenshteinDistance
@@ -401,12 +341,12 @@ public class Criteria {
 		if (!Float.isNaN(levenshteinDistance) && (levenshteinDistance < 0 || levenshteinDistance > 1)) {
 			throw new InvalidDataAccessApiUsageException("Levenshtein Distance has to be within its bounds (0.0 - 1.0).");
 		}
-		criteria.add(new CriteriaEntry(OperationKey.FUZZY, new Object[] { s, Float.valueOf(levenshteinDistance) }));
+		predicates.add(new Predicate(OperationKey.FUZZY, new Object[] { s, Float.valueOf(levenshteinDistance) }));
 		return this;
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} with trailing {@code ~} followed by distance
+	 * Crates new {@link Predicate} with trailing {@code ~} followed by distance
 	 * 
 	 * @param phrase
 	 * @param distance
@@ -421,18 +361,18 @@ public class Criteria {
 			throw new InvalidDataAccessApiUsageException("Phrase must consist of multiple terms, separated with spaces.");
 		}
 
-		criteria.add(new CriteriaEntry(OperationKey.SLOPPY, new Object[] { phrase, Integer.valueOf(distance) }));
+		predicates.add(new Predicate(OperationKey.SLOPPY, new Object[] { phrase, Integer.valueOf(distance) }));
 		return this;
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} allowing native solr expressions
+	 * Crates new {@link Predicate} allowing native solr expressions
 	 * 
 	 * @param s
 	 * @return
 	 */
 	public Criteria expression(String s) {
-		criteria.add(new CriteriaEntry(OperationKey.EXPRESSION, s));
+		predicates.add(new Predicate(OperationKey.EXPRESSION, s));
 		return this;
 	}
 
@@ -451,7 +391,7 @@ public class Criteria {
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} for {@code RANGE [lowerBound TO upperBound]}
+	 * Crates new {@link Predicate} for {@code RANGE [lowerBound TO upperBound]}
 	 * 
 	 * @param lowerBound
 	 * @param upperBound
@@ -462,7 +402,7 @@ public class Criteria {
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} for {@code RANGE [lowerBound TO upperBound]}
+	 * Crates new {@link Predicate} for {@code RANGE [lowerBound TO upperBound]}
 	 * 
 	 * @param lowerBound
 	 * @param upperBound
@@ -471,13 +411,13 @@ public class Criteria {
 	 * @return
 	 */
 	public Criteria between(Object lowerBound, Object upperBound, boolean includeLowerBound, boolean includeUppderBound) {
-		criteria.add(new CriteriaEntry(OperationKey.BETWEEN, new Object[] { lowerBound, upperBound, includeLowerBound,
+		predicates.add(new Predicate(OperationKey.BETWEEN, new Object[] { lowerBound, upperBound, includeLowerBound,
 				includeUppderBound }));
 		return this;
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} for {@code RANGE [* TO upperBound&#125;}
+	 * Crates new {@link Predicate} for {@code RANGE [* TO upperBound&#125;}
 	 * 
 	 * @param upperBound
 	 * @return
@@ -488,7 +428,7 @@ public class Criteria {
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} for {@code RANGE [* TO upperBound]}
+	 * Crates new {@link Predicate} for {@code RANGE [* TO upperBound]}
 	 * 
 	 * @param upperBound
 	 * @return
@@ -499,7 +439,7 @@ public class Criteria {
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} for {@code RANGE &#123;lowerBound TO *]}
+	 * Crates new {@link Predicate} for {@code RANGE &#123;lowerBound TO *]}
 	 * 
 	 * @param lowerBound
 	 * @return
@@ -510,7 +450,7 @@ public class Criteria {
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} for {@code RANGE [lowerBound TO *]}
+	 * Crates new {@link Predicate} for {@code RANGE [lowerBound TO *]}
 	 * 
 	 * @param lowerBound
 	 * @return
@@ -521,18 +461,18 @@ public class Criteria {
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} for multiple values {@code (arg0 arg1 arg2 ...)}
+	 * Crates new {@link Predicate} for multiple values {@code (arg0 arg1 arg2 ...)}
 	 * 
 	 * @param values
 	 * @return
 	 */
 	public Criteria in(Object... values) {
 		assertValuesPresent(values);
-		return in(Arrays.asList(values));
+		return (Criteria) in(Arrays.asList(values));
 	}
 
 	/**
-	 * Crates new {@link CriteriaEntry} for multiple values {@code (arg0 arg1 arg2 ...)}
+	 * Crates new {@link Predicate} for multiple values {@code (arg0 arg1 arg2 ...)}
 	 * 
 	 * @param values the collection containing the values to match against
 	 * @return
@@ -550,44 +490,88 @@ public class Criteria {
 	}
 
 	/**
-	 * Creates new {@link CriteriaEntry} for {@code !geodist}
+	 * Creates new {@link Predicate} for {@code !geodist}
 	 * 
-	 * @param location GeoLocation in degrees
+	 * @param location {@link Point} in degrees
 	 * @param distance
 	 * @return
 	 */
-	public Criteria within(GeoLocation location, Distance distance) {
+	public Criteria within(Point location, Distance distance) {
 		Assert.notNull(location);
 		assertPositiveDistanceValue(distance);
-		criteria.add(new CriteriaEntry(OperationKey.WITHIN, new Object[] { location,
+		predicates.add(new Predicate(OperationKey.WITHIN, new Object[] { location,
 				distance != null ? distance : new Distance(0) }));
 		return this;
 	}
 
 	/**
-	 * Creates new {@link CriteriaEntry} for {@code !bbox} with exact coordinates
+	 * Creates new {@link Predicate} for {@code !geodist}.
+	 * 
+	 * @param circle
+	 * @return
+	 * @since 1.2
+	 */
+	public Criteria within(Circle circle) {
+
+		Assert.notNull(circle, "Circle for 'within' must not be 'null'.");
+		return within(circle.getCenter(), circle.getRadius());
+	}
+
+	/**
+	 * Creates new {@link Predicate} for {@code !bbox} with exact coordinates
 	 * 
 	 * @param box
 	 * @return
 	 */
-	public Criteria near(BoundingBox box) {
-		criteria.add(new CriteriaEntry(OperationKey.NEAR, new Object[] { box }));
+	public Criteria near(Box box) {
+		predicates.add(new Predicate(OperationKey.NEAR, new Object[] { box }));
 		return this;
 	}
 
 	/**
-	 * Creates new CriteriaEntry for {@code !bbox} for a specified distance. The difference between this and
+	 * Creates new {@link Predicate} for {@code !bbox} for a specified distance. The difference between this and
 	 * {@code within} is this is approximate while {@code within} is exact.
 	 * 
 	 * @param location
 	 * @param distance
 	 * @return
+	 * @throws IllegalArgumentException if location is null
+	 * @throws InvalidDataAccessApiUsageException if distance is negative
 	 */
-	public Criteria near(GeoLocation location, Distance distance) {
-		Assert.notNull(location);
+	public Criteria near(Point location, Distance distance) {
+		Assert.notNull(location, "Location must not be 'null' for near criteria.");
 		assertPositiveDistanceValue(distance);
-		criteria.add(new CriteriaEntry(OperationKey.NEAR, new Object[] { location,
+
+		predicates.add(new Predicate(OperationKey.NEAR, new Object[] { location,
 				distance != null ? distance : new Distance(0) }));
+		return this;
+	}
+
+	/**
+	 * Creates new {@link Predicate} for {@code !circle} for a specified distance. The difference between this and
+	 * {@link #within(Circle)} is this is approximate while {@code within} is exact.
+	 * 
+	 * @param circle
+	 * @return
+	 * @since 1.2
+	 */
+	public Criteria near(Circle circle) {
+
+		Assert.notNull(circle, "Circle for 'near' must not be 'null'.");
+		return near(circle.getCenter(), circle.getRadius());
+	}
+
+	/**
+	 * Creates {@link Predicate} for given {@link Function}.
+	 * 
+	 * @param function must not be null
+	 * @return
+	 * @throws IllegalArgumentException if function is null
+	 * @since 1.1
+	 */
+	public Criteria function(Function function) {
+		Assert.notNull(function, "Cannot add 'null' function to criteria.");
+		predicates.add(new Predicate(OperationKey.FUNCTION, function));
 		return this;
 	}
 
@@ -601,35 +585,10 @@ public class Criteria {
 	}
 
 	/**
-	 * @return unmdifiable set of all {@link CriteriaEntry}
-	 */
-	public Set<CriteriaEntry> getCriteriaEntries() {
-		return Collections.unmodifiableSet(this.criteria);
-	}
-
-	/**
-	 * Conjunction to be used with this criteria (AND | OR)
-	 * 
-	 * @return
-	 */
-	public String getConjunctionOperator() {
-		return AND_OPERATOR;
-	}
-
-	/**
-	 * Get the collection of criterias
-	 * 
-	 * @return
-	 */
-	public List<Criteria> getCriteriaChain() {
-		return Collections.unmodifiableList(this.criteriaChain);
-	}
-
-	/**
 	 * @return true if {@code not()} criteria
 	 */
 	public boolean isNegating() {
-		return this.negating;
+		return super.isNegating();
 	}
 
 	/**
@@ -639,6 +598,13 @@ public class Criteria {
 	 */
 	public float getBoost() {
 		return this.boost;
+	}
+
+	/**
+	 * @return unmodifiable set of all {@link Predicate}
+	 */
+	public Set<Predicate> getPredicates() {
+		return Collections.unmodifiableSet(this.predicates);
 	}
 
 	private void assertPositiveDistanceValue(Distance distance) {
@@ -662,38 +628,32 @@ public class Criteria {
 		}
 	}
 
-	static class OrCriteria extends Criteria {
+	@Override
+	public String toString() {
 
-		public OrCriteria() {
-			super();
+		StringBuilder sb = new StringBuilder(this.isOr() ? "OR " : "AND ");
+		sb.append(this.isNegating() ? "!" : "");
+		sb.append(this.field != null ? this.field.getName() : "");
+
+		if (this.predicates.size() > 1) {
+			sb.append('(');
 		}
-
-		public OrCriteria(Field field) {
-			super(field);
+		for (Predicate ce : this.predicates) {
+			sb.append(ce.toString());
 		}
-
-		public OrCriteria(List<Criteria> criteriaChain, Field field) {
-			super(criteriaChain, field);
+		if (this.predicates.size() > 1) {
+			sb.append(')');
 		}
-
-		public OrCriteria(List<Criteria> criteriaChain, String fieldname) {
-			super(criteriaChain, fieldname);
-		}
-
-		public OrCriteria(String fieldname) {
-			super(fieldname);
-		}
-
-		@Override
-		public String getConjunctionOperator() {
-			return OR_OPERATOR;
-		}
-
+		sb.append(' ');
+		return sb.toString();
 	}
+
+	// -------- PREDICATE STUFF --------
 
 	public enum OperationKey {
 		EQUALS("$equals"), CONTAINS("$contains"), STARTS_WITH("$startsWith"), ENDS_WITH("$endsWith"), EXPRESSION(
-				"$expression"), BETWEEN("$between"), NEAR("$near"), WITHIN("$within"), FUZZY("$fuzzy"), SLOPPY("$sloppy");
+				"$expression"), BETWEEN("$between"), NEAR("$near"), WITHIN("$within"), FUZZY("$fuzzy"), SLOPPY("$sloppy"), FUNCTION(
+				"$function");
 
 		private final String key;
 
@@ -711,18 +671,18 @@ public class Criteria {
 	 * Single entry to be used when defining search criteria
 	 * 
 	 * @author Christoph Strobl
-	 * 
+	 * @author Francisco Spaeth
 	 */
-	public static class CriteriaEntry {
+	public static class Predicate {
 
 		private String key;
 		private Object value;
 
-		public CriteriaEntry(OperationKey key, Object value) {
+		public Predicate(OperationKey key, Object value) {
 			this(key.getKey(), value);
 		}
 
-		public CriteriaEntry(String key, Object value) {
+		public Predicate(String key, Object value) {
 			this.key = key;
 			this.value = value;
 		}
@@ -754,6 +714,70 @@ public class Criteria {
 			this.value = value;
 		}
 
+		@Override
+		public String toString() {
+			return key + ":" + value;
+		}
+
+	}
+
+	// -------- NODE STUFF ---------
+
+	/**
+	 * Explicitly connect {@link Criteria} with another one allows to create explicit bracketing.
+	 * 
+	 * @since 1.4
+	 * @return
+	 */
+	public Criteria connect() {
+		Crotch c = new Crotch();
+		c.add(this);
+		return c;
+	}
+
+	@SuppressWarnings("unchecked")
+	@Override
+	public Crotch and(Node node) {
+
+		if (!(node instanceof Criteria)) {
+			throw new IllegalArgumentException("Can only add instances of Criteria");
+		}
+
+		Crotch crotch = new Crotch();
+		crotch.setParent(this.getParent());
+		crotch.add(this);
+		crotch.add((Criteria) node);
+		return crotch;
+	}
+
+	@SuppressWarnings("unchecked")
+	public Crotch and(String fieldname) {
+
+		Criteria node = new Criteria(fieldname);
+		return and(node);
+	}
+
+	@SuppressWarnings("unchecked")
+	public Crotch or(Node node) {
+
+		if (!(node instanceof Criteria)) {
+			throw new IllegalArgumentException("Can only add instances of Criteria");
+		}
+
+		node.setPartIsOr(true);
+
+		Crotch crotch = new Crotch();
+		crotch.setParent(this.getParent());
+		crotch.add(this);
+		crotch.add((Criteria) node);
+		return crotch;
+	}
+
+	@SuppressWarnings("unchecked")
+	public Crotch or(String fieldname) {
+		Criteria node = new Criteria(fieldname);
+		node.setPartIsOr(true);
+		return or(node);
 	}
 
 }

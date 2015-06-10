@@ -28,36 +28,27 @@ import org.springframework.data.annotation.Version;
  */
 public class ExampleSolrBean {
 
-	@Field
-	private String id;
+	@Field private String id;
 
-	@Field
-	private String name;
+	@Field private String name;
 
-	@Field("cat")
-	private List<String> category;
+	@Field("cat") private List<String> category;
 
-	@Field
-	private float price;
+	@Field private float price;
 
-	@Field
-	private boolean inStock;
+	@Field private boolean inStock;
 
-	@Field
-	private Integer popularity;
+	@Field private Integer popularity;
 
-	@Field("last_modified")
-	private Date lastModified;
+	@Field("last_modified") private Date lastModified;
 
-	@Field
-	private String store;
+	@Field private String store;
 
-	@Field("manu_id_s")
-	private String manufacturerId;
+	@Field("manu_id_s") private String manufacturerId;
 
-	@Version
-	@Field("_version_")
-	private Long version;
+	@Field private Float distance;
+
+	@Version @Field("_version_") private Long version;
 
 	public ExampleSolrBean() {
 		this.category = new ArrayList<String>();
@@ -158,6 +149,19 @@ public class ExampleSolrBean {
 
 	public void setVersion(Long version) {
 		this.version = version;
+	}
+
+	public Float getDistance() {
+		return distance;
+	}
+
+	public void setDistance(Float distance) {
+		this.distance = distance;
+	}
+
+	@Override
+	public String toString() {
+		return "ExampleSolrBean [id=" + id + ", name=" + name + "]";
 	}
 
 }

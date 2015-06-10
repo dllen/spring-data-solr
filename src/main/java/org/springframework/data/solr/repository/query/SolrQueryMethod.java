@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,15 +17,23 @@ package org.springframework.data.solr.repository.query;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 
 import org.springframework.core.annotation.AnnotationUtils;
 import org.springframework.data.repository.core.RepositoryMetadata;
 import org.springframework.data.repository.query.QueryMethod;
 import org.springframework.data.solr.repository.Facet;
 import org.springframework.data.solr.repository.Highlight;
+import org.springframework.data.solr.repository.Pivot;
 import org.springframework.data.solr.repository.Query;
+import org.springframework.data.solr.repository.SelectiveStats;
+import org.springframework.data.solr.repository.Stats;
 import org.springframework.data.util.ClassTypeInformation;
 import org.springframework.data.util.TypeInformation;
 import org.springframework.util.CollectionUtils;
@@ -37,16 +45,15 @@ import org.springframework.util.StringUtils;
  * @author Christoph Strobl
  * @author Luke Corpe
  * @author Andrey Paramonov
+ * @author Francisco Spaeth
  */
 public class SolrQueryMethod extends QueryMethod {
 
-	private final SolrEntityInformation<?, ?> entityInformation;
 	private Method method;
 
 	public SolrQueryMethod(Method method, RepositoryMetadata metadata, SolrEntityInformationCreator solrInformationCreator) {
 		super(method, metadata);
 		this.method = method;
-		this.entityInformation = solrInformationCreator.getEntityInformation(metadata.getReturnedDomainClass(method));
 	}
 
 	/**
@@ -117,7 +124,7 @@ public class SolrQueryMethod extends QueryMethod {
 	 * @return true if {@link #hasFacetFields()} or {@link #hasFacetQueries()}
 	 */
 	public boolean isFacetQuery() {
-		return hasFacetFields() || hasFacetQueries();
+		return hasFacetFields() || hasFacetQueries() || hasPivotFields();
 	}
 
 	/**
@@ -126,6 +133,16 @@ public class SolrQueryMethod extends QueryMethod {
 	public boolean hasFacetFields() {
 		if (hasFacetAnnotation()) {
 			return !CollectionUtils.isEmpty(getFacetFields());
+		}
+		return false;
+	}
+
+	/**
+	 * @return true if {@link Facet#pivotFields()} is not empty
+	 */
+	public boolean hasPivotFields() {
+		if (hasFacetAnnotation()) {
+			return !CollectionUtils.isEmpty(getPivotFields());
 		}
 		return false;
 	}
@@ -148,6 +165,17 @@ public class SolrQueryMethod extends QueryMethod {
 		return getAnnotationValuesAsStringList(getFacetAnnotation(), "queries");
 	}
 
+	public List<String[]> getPivotFields() {
+		List<Pivot> pivotFields = getAnnotationValuesList(getFacetAnnotation(), "pivots", Pivot.class);
+		ArrayList<String[]> result = new ArrayList<String[]>();
+
+		for (Pivot pivot : pivotFields) {
+			result.add(pivot.value());
+		}
+
+		return result;
+	}
+
 	/**
 	 * @return true if {@link Facet#queries()} is not empty
 	 */
@@ -158,7 +186,7 @@ public class SolrQueryMethod extends QueryMethod {
 		return false;
 	}
 
-	private Annotation getFacetAnnotation() {
+	private Facet getFacetAnnotation() {
 		return this.method.getAnnotation(Facet.class);
 	}
 
@@ -184,11 +212,103 @@ public class SolrQueryMethod extends QueryMethod {
 	}
 
 	/**
+	 * @return the {@link Stats} annotation, null if there is none
+	 */
+	private Stats getStatsAnnotation() {
+		return this.method.getAnnotation(Stats.class);
+	}
+
+	/**
+	 * @return if something was configured within {@link Stats}
+	 * @since 1.4
+	 */
+	public boolean hasStatsDefinition() {
+		return (//
+		!(getStatsAnnotation() == null) && (//
+		!getFieldStats().isEmpty() || //
+				!getStatsFacets().isEmpty() || //
+				!getStatsSelectiveFacets().isEmpty() || //
+		!getStatsSelectiveCountDistinctFields().isEmpty())//
+		);
+	}
+
+	/**
+	 * @return true if stats is distinct
+	 * @since 1.4
+	 */
+	public boolean isFieldStatsCountDistinctEnable() {
+
+		Stats stats = getStatsAnnotation();
+		return stats != null && stats.distinct();
+	}
+
+	/**
+	 * @return value of {@link Stats#value()}
+	 * @since 1.4
+	 */
+	public List<String> getFieldStats() {
+		return getAnnotationValuesAsStringList(getStatsAnnotation(), "value");
+	}
+
+	/**
+	 * @return value of {@link Stats#facets()}
+	 * @since 1.4
+	 */
+	public List<String> getStatsFacets() {
+		return getAnnotationValuesAsStringList(getStatsAnnotation(), "facets");
+	}
+
+	/**
+	 * @return value of facets used in {@link Stats#selective()}
+	 * @since 1.4
+	 */
+	public Map<String, String[]> getStatsSelectiveFacets() {
+
+		List<SelectiveStats> selective = getAnnotationValuesList(getStatsAnnotation(), "selective", SelectiveStats.class);
+
+		Map<String, String[]> result = new LinkedHashMap<String, String[]>();
+		for (SelectiveStats selectiveFacet : selective) {
+			result.put(selectiveFacet.field(), selectiveFacet.facets());
+		}
+
+		return result;
+	}
+
+	/**
+	 * @return value of facets used in {@link Stats#selective()}
+	 * @since 1.4
+	 */
+	public Collection<String> getStatsSelectiveCountDistinctFields() {
+
+		List<SelectiveStats> selective = getAnnotationValuesList(getStatsAnnotation(), "selective", SelectiveStats.class);
+
+		Collection<String> result = new LinkedHashSet<String>();
+		for (SelectiveStats selectiveFacet : selective) {
+			if (selectiveFacet.distinct()) {
+				result.add(selectiveFacet.field());
+			}
+		}
+
+		return result;
+	}
+
+	/**
 	 * @return true if {@link Query#filters()} is not empty
 	 */
 	public boolean hasFilterQuery() {
 		if (hasQueryAnnotation()) {
 			return !CollectionUtils.isEmpty(getFilterQueries());
+		}
+		return false;
+	}
+
+	/**
+	 * @return value of {@link Query#delete()}
+	 * @since 1.2
+	 */
+	public boolean isDeleteQuery() {
+		if (hasQueryAnnotation()) {
+			return ((Boolean) AnnotationUtils.getValue(getQueryAnnotation(), "delete")).booleanValue();
 		}
 		return false;
 	}
@@ -290,7 +410,8 @@ public class SolrQueryMethod extends QueryMethod {
 	}
 
 	/**
-	 * @return value of {@link Query#defaultOperator()} or {@link org.springframework.data.solr.core.query.Query.Operator#NONE} if not set 
+	 * @return value of {@link Query#defaultOperator()} or
+	 *         {@link org.springframework.data.solr.core.query.Query.Operator#NONE} if not set
 	 */
 	public org.springframework.data.solr.core.query.Query.Operator getDefaultOperator() {
 		if (hasQueryAnnotation()) {
@@ -341,9 +462,10 @@ public class SolrQueryMethod extends QueryMethod {
 		return Collections.emptyList();
 	}
 
-	@Override
-	public SolrEntityInformation<?, ?> getEntityInformation() {
-		return entityInformation;
+	@SuppressWarnings("unchecked")
+	private <T> List<T> getAnnotationValuesList(Annotation annotation, String attribute, Class<T> clazz) {
+		T[] values = (T[]) AnnotationUtils.getValue(annotation, attribute);
+		return CollectionUtils.arrayToList(values);
 	}
 
 	@Override

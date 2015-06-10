@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,11 +15,15 @@
  */
 package org.springframework.data.solr.core.mapping;
 
+import java.util.Collection;
+
 import org.springframework.core.convert.converter.Converter;
+import org.springframework.data.mapping.PersistentEntity;
 import org.springframework.data.mapping.PersistentProperty;
 
 /**
  * @author Christoph Strobl
+ * @author Francisco Spaeth
  */
 public interface SolrPersistentProperty extends PersistentProperty<SolrPersistentProperty> {
 
@@ -41,6 +45,76 @@ public interface SolrPersistentProperty extends PersistentProperty<SolrPersisten
 	 */
 	boolean containsWildcard();
 
+	/**
+	 * @return true if property is boosted
+	 */
+	boolean isBoosted();
+
+	/**
+	 * @return property boost value if {@link #isBoosted()}, null otherwise
+	 */
+	Float getBoost();
+
+	/**
+	 * @return true if property shall be indexed in solr.
+	 * @since 1.3
+	 */
+	boolean isSearchable();
+
+	/**
+	 * @return true if property shall be stored and returned in result documents.
+	 * @since 1.3
+	 */
+	boolean isStored();
+
+	/**
+	 * @see #isCollectionLike()
+	 * @return true if property is collection like
+	 * @since 1.3
+	 */
+	boolean isMultiValued();
+
+	/**
+	 * @return mapped solr type name
+	 * @since 1.3
+	 */
+	String getSolrTypeName();
+
+	/**
+	 * @since 1.3
+	 */
+	Object getDefaultValue();
+
+	/**
+	 * @return list of fields the current fields value shall be copied to
+	 * @since 1.3
+	 */
+	Collection<String> getCopyFields();
+
+	/**
+	 * @return
+	 * @since 1.3
+	 */
+	boolean isUnique();
+
+	/**
+	 * @return
+	 * @since 1.3
+	 */
+	boolean isRequired();
+
+	/**
+	 * Returns whether the property is a <em>potential</em> score property of the owning {@link PersistentEntity}. This
+	 * method is mainly used by {@link PersistentEntity} implementation to discover score property candidates on
+	 * {@link PersistentEntity} creation you should rather call
+	 * {@link PersistentEntity#isScoreProperty(PersistentProperty)} to determine whether the current property is the score
+	 * property of that {@link PersistentEntity} under consideration.
+	 * 
+	 * @return
+	 * @since 1.4
+	 */
+	boolean isScoreProperty();
+
 	public enum PropertyToFieldNameConverter implements Converter<SolrPersistentProperty, String> {
 
 		INSTANCE;
@@ -49,4 +123,5 @@ public interface SolrPersistentProperty extends PersistentProperty<SolrPersisten
 			return source.getFieldName();
 		}
 	}
+
 }

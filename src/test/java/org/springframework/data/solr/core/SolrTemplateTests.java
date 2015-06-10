@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,11 +17,14 @@ package org.springframework.data.solr.core;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
 import org.apache.http.ParseException;
 import org.apache.solr.client.solrj.SolrQuery;
+import org.apache.solr.client.solrj.SolrRequest;
 import org.apache.solr.client.solrj.SolrServer;
 import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.response.QueryResponse;
@@ -33,6 +36,10 @@ import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.common.SolrInputDocument;
 import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.params.SolrParams;
+import org.apache.solr.common.util.NamedList;
+import org.hamcrest.core.Is;
+import org.hamcrest.core.IsEqual;
+import org.hamcrest.core.IsNull;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -42,22 +49,30 @@ import org.mockito.Matchers;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.runners.MockitoJUnitRunner;
+import org.springframework.core.annotation.AnnotationUtils;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.InvalidDataAccessApiUsageException;
+import org.springframework.data.annotation.Id;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.solr.UncategorizedSolrException;
+import org.springframework.data.solr.core.mapping.Indexed;
+import org.springframework.data.solr.core.mapping.SolrDocument;
 import org.springframework.data.solr.core.query.Criteria;
 import org.springframework.data.solr.core.query.PartialUpdate;
 import org.springframework.data.solr.core.query.Query;
 import org.springframework.data.solr.core.query.SimpleQuery;
 import org.springframework.data.solr.core.query.SimpleStringCriteria;
 import org.springframework.data.solr.core.query.SolrDataQuery;
+import org.springframework.data.solr.core.schema.SolrPersistentEntitySchemaCreator.Feature;
+import org.springframework.data.solr.core.schema.SolrSchemaRequest;
+import org.springframework.data.solr.repository.Score;
 import org.springframework.data.solr.server.SolrServerFactory;
 
 /**
  * @author Christoph Strobl
  * @author Joachim Uhrlass
+ * @author Francisco Spaeth
  */
 @RunWith(MockitoJUnitRunner.class)
 public class SolrTemplateTests {
@@ -65,14 +80,16 @@ public class SolrTemplateTests {
 	private SolrTemplate solrTemplate;
 
 	private static final SimpleJavaObject SIMPLE_OBJECT = new SimpleJavaObject("simple-string-id", 123l);
+	private static final SimpleBoostedJavaObject SIMPLE_BOOSTED_OBJECT = new SimpleBoostedJavaObject("simple-string-id",
+			123l, "simple-string-boost");
 	private static final SolrInputDocument SIMPLE_DOCUMENT = new SolrInputDocument();
 
-	@Mock
-	private SolrServer solrServerMock;
+	private @Mock SolrServer solrServerMock;
 
 	@Before
 	public void setUp() {
 		solrTemplate = new SolrTemplate(solrServerMock, "core1");
+		solrTemplate.afterPropertiesSet();
 	}
 
 	@Test(expected = IllegalArgumentException.class)
@@ -317,8 +334,7 @@ public class SolrTemplateTests {
 		QueryParser parser = new QueryParser() {
 
 			@Override
-			public void registerConverter(Converter<?, ?> converter) {
-			}
+			public void registerConverter(Converter<?, ?> converter) {}
 
 			@Override
 			public String getQueryString(SolrDataQuery query) {
@@ -333,11 +349,148 @@ public class SolrTemplateTests {
 		};
 
 		solrTemplate.registerQueryParser(SimpleQuery.class, parser);
-		solrTemplate.query(new SimpleQuery(new SimpleStringCriteria("my:criteria")));
+		solrTemplate.query(new SimpleQuery(new SimpleStringCriteria("my:criteria")), null);
 
 		ArgumentCaptor<SolrParams> captor = ArgumentCaptor.forClass(SolrParams.class);
 
 		Mockito.verify(solrServerMock, Mockito.times(1)).query(captor.capture());
 		Assert.assertEquals("*:*", captor.getValue().getParams(CommonParams.Q)[0]);
 	}
+
+	/**
+	 * @see DATASOLR-88
+	 */
+	@Test
+	public void testSaveBoostedShouldUseDocumentBoost() throws IOException, SolrServerException, SecurityException,
+			NoSuchFieldException {
+
+		solrTemplate.saveBean(SIMPLE_BOOSTED_OBJECT);
+
+		ArgumentCaptor<SolrInputDocument> captor = ArgumentCaptor.forClass(SolrInputDocument.class);
+		Mockito.verify(solrServerMock, Mockito.times(1)).add(captor.capture(), Mockito.eq(-1));
+
+		Assert.assertEquals(SIMPLE_BOOSTED_OBJECT.getId(), captor.getValue().getFieldValue("id"));
+		Assert.assertEquals(SIMPLE_BOOSTED_OBJECT.getValue(), captor.getValue().getFieldValue("value"));
+
+		float entityBoost = AnnotationUtils.getAnnotation(SIMPLE_BOOSTED_OBJECT.getClass(), SolrDocument.class).boost();
+		Assert.assertThat(captor.getValue().getDocumentBoost(), Is.is(entityBoost));
+	}
+
+	/**
+	 * @see DATASOLR-88
+	 */
+	@Test
+	public void testSaveBoostedShouldUseFieldBoostViaIndexedAnnotation() throws IOException, SolrServerException,
+			SecurityException, NoSuchFieldException {
+
+		solrTemplate.saveBean(SIMPLE_BOOSTED_OBJECT);
+
+		ArgumentCaptor<SolrInputDocument> captor = ArgumentCaptor.forClass(SolrInputDocument.class);
+		Mockito.verify(solrServerMock, Mockito.times(1)).add(captor.capture(), Mockito.eq(-1));
+
+		Assert.assertEquals(SIMPLE_BOOSTED_OBJECT.getId(), captor.getValue().getFieldValue("id"));
+		Assert.assertEquals(SIMPLE_BOOSTED_OBJECT.getValue(), captor.getValue().getFieldValue("value"));
+
+		float fieldBoost = AnnotationUtils.getAnnotation(SIMPLE_BOOSTED_OBJECT.getClass().getDeclaredField("boostedField"),
+				Indexed.class).boost();
+		Assert.assertThat(captor.getValue().getField("boostedField").getBoost(), Is.is(fieldBoost));
+	}
+
+	/**
+	 * @throws IOException
+	 * @throws SolrServerException
+	 * @see DATASOLR-72
+	 */
+	@Test
+	public void schemaShouldBeUpdatedPriorToSavingEntity() throws SolrServerException, IOException {
+
+		NamedList<Object> nl = new NamedList<Object>();
+		nl.add("json", "{ \"schema\" : {\"name\" : \"core1\" }, \"version\" : 1.5 }");
+		Mockito.when(solrServerMock.request(Mockito.any(SolrSchemaRequest.class))).thenReturn(nl);
+		Mockito.when(solrServerMock.request(Mockito.any(SolrSchemaRequest.class))).thenReturn(nl);
+
+		solrTemplate = new SolrTemplate(solrServerMock, "core1");
+		solrTemplate.setSchemaCreationFeatures(Collections.singletonList(Feature.CREATE_MISSING_FIELDS));
+		solrTemplate.afterPropertiesSet();
+		solrTemplate.saveBean(new DocumentWithIndexAnnotations());
+
+		ArgumentCaptor<SolrRequest> requestCaptor = ArgumentCaptor.forClass(SolrRequest.class);
+		Mockito.verify(solrServerMock, Mockito.times(3)).request(requestCaptor.capture());
+
+		SolrRequest capturedRequest = requestCaptor.getValue();
+
+		Assert.assertThat(capturedRequest.getMethod(), IsEqual.equalTo(SolrRequest.METHOD.POST));
+		Assert.assertThat(capturedRequest.getPath(), IsEqual.equalTo("/schema/fields"));
+		Assert.assertThat(capturedRequest.getContentStreams(), IsNull.notNullValue());
+	}
+
+	/**
+	 * @see DATASOLR-83
+	 */
+	@Test
+	public void testGetById() throws SolrServerException, IOException {
+
+		ArgumentCaptor<SolrRequest> captor = ArgumentCaptor.forClass(SolrRequest.class);
+		QueryResponse responseMock = Mockito.mock(QueryResponse.class);
+		SolrDocumentList resultList = new SolrDocumentList();
+		Mockito.when(responseMock.getResults()).thenReturn(resultList);
+		Mockito.when(solrServerMock.request(captor.capture())).thenReturn(new NamedList<Object>());
+
+		DocumentWithIndexAnnotations result = solrTemplate.getById("myId", DocumentWithIndexAnnotations.class);
+
+		Mockito.verify(solrServerMock, Mockito.times(1)).request(captor.capture());
+		Assert.assertNull(result);
+		Assert.assertEquals("myId", captor.getValue().getParams().get("ids"));
+		Assert.assertEquals("/get", captor.getValue().getPath());
+	}
+
+	/**
+	 * @see DATASOLR-83
+	 */
+	@Test
+	public void testGetByIds() throws SolrServerException, IOException {
+
+		ArgumentCaptor<SolrRequest> captor = ArgumentCaptor.forClass(SolrRequest.class);
+
+		QueryResponse responseMock = Mockito.mock(QueryResponse.class);
+		SolrDocumentList resultList = new SolrDocumentList();
+		Mockito.when(responseMock.getResults()).thenReturn(resultList);
+		Mockito.when(solrServerMock.request(captor.capture())).thenReturn(new NamedList<Object>());
+
+		List<String> ids = Arrays.asList("myId1", "myId2");
+		Collection<DocumentWithIndexAnnotations> result = solrTemplate.getById(ids, DocumentWithIndexAnnotations.class);
+
+		Mockito.verify(solrServerMock, Mockito.times(1)).request(captor.capture());
+		Assert.assertTrue(result.isEmpty());
+		Assert.assertArrayEquals(new String[] { "myId1", "myId2" }, captor.getValue().getParams().getParams("ids"));
+		Assert.assertEquals("/get", captor.getValue().getPath());
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testSaveShouldNotSaveScoreField() throws IOException, SolrServerException, SecurityException,
+			NoSuchFieldException {
+
+		solrTemplate.saveBean(new DocumentWithScoreAnnotation());
+
+		ArgumentCaptor<SolrInputDocument> captor = ArgumentCaptor.forClass(SolrInputDocument.class);
+		Mockito.verify(solrServerMock, Mockito.times(1)).add(captor.capture(), Mockito.eq(-1));
+
+		Assert.assertNull(captor.getValue().getFieldValue("score"));
+	}
+
+	static class DocumentWithIndexAnnotations {
+
+		@Id String id;
+		@Indexed(name = "namedProperty") String renamedProperty;
+	}
+
+	static class DocumentWithScoreAnnotation {
+
+		@Id String id;
+		@Score Float scoreProperty;
+	}
+
 }

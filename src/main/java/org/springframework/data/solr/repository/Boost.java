@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,16 +23,17 @@ import java.lang.annotation.Target;
 
 /**
  * Increase document score by boosting search criteria hit
- *  
+ * 
  * @author Christoph Strobl
+ * @author Francisco Spaeth
  */
 @Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.PARAMETER)
+@Target({ ElementType.PARAMETER })
 @Documented
 public @interface Boost {
 
 	/**
-	 * @return Boost Term by value. Default is @{code Float.NaN}.
+	 * @return Boost Term, or Field by value. Default is {@code Float.NaN}.
 	 */
 	float value() default Float.NaN;
 

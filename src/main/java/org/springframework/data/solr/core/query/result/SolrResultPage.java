@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,30 +26,41 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.solr.core.query.Field;
+import org.springframework.data.solr.core.query.Function;
+import org.springframework.data.solr.core.query.PivotField;
+import org.springframework.data.solr.core.query.Query;
 import org.springframework.data.solr.core.query.SimpleField;
+import org.springframework.data.solr.core.query.SimplePivotField;
 import org.springframework.data.solr.core.query.result.HighlightEntry.Highlight;
+import org.springframework.util.Assert;
 import org.springframework.util.ObjectUtils;
 
 /**
  * Base implementation of page holding solr response entities.
  * 
  * @author Christoph Strobl
- * 
+ * @author Francisco Spaeth
  */
-public class SolrResultPage<T> extends PageImpl<T> implements FacetPage<T>, HighlightPage<T> {
+public class SolrResultPage<T> extends PageImpl<T> implements FacetPage<T>, HighlightPage<T>, ScoredPage<T>,
+		GroupPage<T>, StatsPage<T> {
 
 	private static final long serialVersionUID = -4199560685036530258L;
 
 	private Map<PageKey, Page<FacetFieldEntry>> facetResultPages = new LinkedHashMap<PageKey, Page<FacetFieldEntry>>(1);
+	private Map<PageKey, List<FacetPivotFieldEntry>> facetPivotResultPages = new LinkedHashMap<PageKey, List<FacetPivotFieldEntry>>();
 	private Page<FacetQueryEntry> facetQueryResult;
 	private List<HighlightEntry<T>> highlighted;
+	private Float maxScore;
+	private Map<Object, GroupResult<T>> groupResults = Collections.emptyMap();
+	private Map<String, FieldStatsResult> fieldStatsResults;
 
 	public SolrResultPage(List<T> content) {
 		super(content);
 	}
 
-	public SolrResultPage(List<T> content, Pageable pageable, long total) {
+	public SolrResultPage(List<T> content, Pageable pageable, long total, Float maxScore) {
 		super(content, pageable, total);
+		this.maxScore = maxScore;
 	}
 
 	@Override
@@ -63,13 +74,33 @@ public class SolrResultPage<T> extends PageImpl<T> implements FacetPage<T>, High
 		return this.getFacetResultPage(field.getName());
 	}
 
+	@Override
+	public List<FacetPivotFieldEntry> getPivot(String fieldName) {
+		return facetPivotResultPages.get(new StringPageKey(fieldName));
+	}
+
+	@Override
+	public List<FacetPivotFieldEntry> getPivot(PivotField field) {
+		return facetPivotResultPages.get(new StringPageKey(field.getName()));
+	}
+
 	public final void addFacetResultPage(Page<FacetFieldEntry> page, Field field) {
 		this.facetResultPages.put(new StringPageKey(field.getName()), page);
+	}
+
+	public final void addFacetPivotResultPage(List<FacetPivotFieldEntry> result, PivotField field) {
+		this.facetPivotResultPages.put(new StringPageKey(field.getName()), result);
 	}
 
 	public void addAllFacetFieldResultPages(Map<Field, Page<FacetFieldEntry>> pageMap) {
 		for (Map.Entry<Field, Page<FacetFieldEntry>> entry : pageMap.entrySet()) {
 			addFacetResultPage(entry.getValue(), entry.getKey());
+		}
+	}
+
+	public void addAllFacetPivotFieldResult(Map<PivotField, List<FacetPivotFieldEntry>> resultMap) {
+		for (Map.Entry<PivotField, List<FacetPivotFieldEntry>> entry : resultMap.entrySet()) {
+			addFacetPivotResultPage(entry.getValue(), entry.getKey());
 		}
 	}
 
@@ -101,6 +132,20 @@ public class SolrResultPage<T> extends PageImpl<T> implements FacetPage<T>, High
 	}
 
 	@Override
+	public Collection<PivotField> getFacetPivotFields() {
+		if (this.facetPivotResultPages.isEmpty()) {
+			return Collections.emptyList();
+		}
+		List<PivotField> fields = new ArrayList<PivotField>(this.facetPivotResultPages.size());
+
+		for (PageKey pageKey : this.facetPivotResultPages.keySet()) {
+			fields.add(new SimplePivotField(pageKey.getKey().toString()));
+		}
+
+		return fields;
+	}
+
+	@Override
 	public Collection<Page<? extends FacetEntry>> getAllFacets() {
 		List<Page<? extends FacetEntry>> entries = new ArrayList<Page<? extends FacetEntry>>(
 				this.facetResultPages.size() + 1);
@@ -128,6 +173,70 @@ public class SolrResultPage<T> extends PageImpl<T> implements FacetPage<T>, High
 			}
 		}
 		return Collections.emptyList();
+	}
+
+	/**
+	 * @param groupResults
+	 * @since 1.4
+	 */
+	public void setGroupResults(Map<Object, GroupResult<T>> groupResults) {
+		this.groupResults = groupResults;
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.data.solr.core.query.result.ScoredPage#getMaxScore()
+	 */
+	@Override
+	public Float getMaxScore() {
+		return maxScore;
+	}
+
+	@Override
+	public GroupResult<T> getGroupResult(Field field) {
+		Assert.notNull(field, "group result field must not be null");
+		return groupResults.get(field.getName());
+	}
+
+	@Override
+	public GroupResult<T> getGroupResult(Function function) {
+		Assert.notNull(function, "group result function must not be null");
+		return groupResults.get(function);
+	}
+
+	@Override
+	public GroupResult<T> getGroupResult(Query query) {
+		Assert.notNull(query, "group result query must not be null");
+		return groupResults.get(query);
+	}
+
+	@Override
+	public GroupResult<T> getGroupResult(String name) {
+		Assert.notNull(name, "group result name must not be null");
+		return groupResults.get(name);
+	}
+
+	/**
+	 * @param fieldStatsResult
+	 * @since 1.4
+	 */
+	public void setFieldStatsResults(Map<String, FieldStatsResult> fieldStatsResults) {
+		this.fieldStatsResults = fieldStatsResults;
+	}
+
+	@Override
+	public FieldStatsResult getFieldStatsResult(Field field) {
+		return getFieldStatsResult(field.getName());
+	}
+
+	@Override
+	public FieldStatsResult getFieldStatsResult(String fieldName) {
+		return this.fieldStatsResults.get(fieldName);
+	}
+
+	@Override
+	public Map<String, FieldStatsResult> getFieldStatsResults() {
+		return this.fieldStatsResults;
 	}
 
 }

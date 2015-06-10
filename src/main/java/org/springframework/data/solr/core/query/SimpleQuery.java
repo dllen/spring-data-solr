@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.util.Assert;
@@ -31,33 +30,63 @@ import org.springframework.util.Assert;
  * @author Rosty Kerei
  * @author Luke Corpe
  * @author Andrey Paramonov
+ * @author Francisco Spaeth
  */
 public class SimpleQuery extends AbstractQuery implements Query, FilterQuery {
 
-	public static final Pageable DEFAULT_PAGE = new PageRequest(0, DEFAULT_PAGE_SIZE);
-
 	private List<Field> projectionOnFields = new ArrayList<Field>(0);
-	private List<Field> groupByFields = new ArrayList<Field>(0);
 	private List<FilterQuery> filterQueries = new ArrayList<FilterQuery>(0);;
-	private Pageable pageable = DEFAULT_PAGE;
+
+	private Integer offset = null;
+	private Integer rows = null;
+
 	private Sort sort;
+
 	private Operator defaultOperator;
 	private Integer timeAllowed;
 	private String defType;
 
-	public SimpleQuery() {
-	}
+	private GroupOptions groupOptions;
+	private StatsOptions statsOptions;
 
+	public SimpleQuery() {}
+
+	/**
+	 * @param criteria
+	 */
 	public SimpleQuery(Criteria criteria) {
 		this(criteria, null);
 	}
 
+	/**
+	 * @param queryString
+	 * @since 1.1
+	 */
+	public SimpleQuery(String queryString) {
+		this(new SimpleStringCriteria(queryString));
+	}
+
+	/**
+	 * @param criteria
+	 * @param pageable
+	 */
 	public SimpleQuery(Criteria criteria, Pageable pageable) {
 		super(criteria);
-		this.pageable = pageable;
+
 		if (pageable != null) {
+			this.offset = pageable.getOffset();
+			this.rows = pageable.getPageSize();
 			this.addSort(pageable.getSort());
 		}
+	}
+
+	/**
+	 * @param queryString
+	 * @param pageable
+	 * @since 1.1
+	 */
+	public SimpleQuery(String queryString, Pageable pageable) {
+		this(new SimpleStringCriteria(queryString), pageable);
 	}
 
 	public static final Query fromQuery(Query source) {
@@ -146,26 +175,49 @@ public class SimpleQuery extends AbstractQuery implements Query, FilterQuery {
 	public final <T extends Query> T setPageRequest(Pageable pageable) {
 		Assert.notNull(pageable);
 
-		this.pageable = pageable;
+		this.offset = pageable.getOffset();
+		this.rows = pageable.getPageSize();
 		return this.addSort(pageable.getSort());
 	}
 
 	@SuppressWarnings("unchecked")
 	@Override
+	public <T extends Query> T setOffset(Integer offset) {
+		this.offset = offset;
+		return (T) this;
+	}
+
+	@SuppressWarnings("unchecked")
+	@Override
+	public <T extends Query> T setRows(Integer rows) {
+		this.rows = rows;
+		return (T) this;
+	}
+
+	@SuppressWarnings("unchecked")
+	@Override
+	@Deprecated
 	public final <T extends Query> T addGroupByField(Field field) {
 		Assert.notNull(field, "Field for grouping must not be null.");
 		Assert.hasText(field.getName(), "Field.name for grouping must not be null/empty.");
 
-		this.groupByFields.add(field);
+		if (this.groupOptions == null) {
+			this.groupOptions = new GroupOptions();
+		}
+
+		this.groupOptions.addGroupByField(field).setGroupMain(true);
 		return (T) this;
 	}
 
 	/**
-	 * add grouping on fieldname
+	 * add grouping on field name
 	 * 
 	 * @param fieldname must not be null
 	 * @return
+	 * @deprecated in favor of {@link GroupOptions}
+	 * @see GroupOptions
 	 */
+	@Deprecated
 	public final <T extends Query> T addGroupByField(String fieldname) {
 		return addGroupByField(new SimpleField(fieldname));
 	}
@@ -193,12 +245,34 @@ public class SimpleQuery extends AbstractQuery implements Query, FilterQuery {
 
 	@Override
 	public Pageable getPageRequest() {
-		return this.pageable;
+
+		if (this.rows == null && this.offset == null) {
+			return null;
+		}
+
+		int rows = this.rows != null ? this.rows : DEFAULT_PAGE_SIZE;
+		int offset = this.offset != null ? this.offset : 0;
+
+		return new SolrPageRequest(rows != 0 ? offset / rows : 0, rows, this.sort);
 	}
 
 	@Override
+	public Integer getOffset() {
+		return this.offset;
+	}
+
+	@Override
+	public Integer getRows() {
+		return this.rows;
+	}
+
+	@Override
+	@Deprecated
 	public List<Field> getGroupByFields() {
-		return Collections.unmodifiableList(this.groupByFields);
+		if (this.groupOptions == null) {
+			return Collections.emptyList();
+		}
+		return Collections.unmodifiableList(this.groupOptions.getGroupByFields());
 	}
 
 	@Override
@@ -223,6 +297,39 @@ public class SimpleQuery extends AbstractQuery implements Query, FilterQuery {
 	@Override
 	public Integer getTimeAllowed() {
 		return this.timeAllowed;
+	}
+
+	@SuppressWarnings("unchecked")
+	@Override
+	public <T extends Query> T setGroupOptions(GroupOptions groupOptions) {
+		this.groupOptions = groupOptions;
+		return (T) this;
+	}
+
+	@Override
+	public GroupOptions getGroupOptions() {
+		return groupOptions;
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.data.solr.core.query.Query#getStatsOptions()
+	 */
+	@Override
+	public StatsOptions getStatsOptions() {
+		return statsOptions;
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.data.solr.core.query.Query#setStatsOptions(org.springframework.data.solr.core.query.StatsOptions)
+	 */
+	@SuppressWarnings("unchecked")
+	@Override
+	public <T extends Query> T setStatsOptions(StatsOptions statsOptions) {
+
+		this.statsOptions = statsOptions;
+		return (T) this;
 	}
 
 	@Override

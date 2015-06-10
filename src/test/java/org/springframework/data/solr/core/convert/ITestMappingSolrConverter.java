@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2015 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,32 +15,39 @@
  */
 package org.springframework.data.solr.core.convert;
 
+import static org.hamcrest.core.IsEqual.*;
+import static org.junit.Assert.*;
+
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 
 import javax.xml.parsers.ParserConfigurationException;
 
 import org.apache.solr.client.solrj.beans.Field;
-import org.hamcrest.core.IsEqual;
 import org.joda.time.DateTime;
 import org.joda.time.LocalDateTime;
 import org.junit.After;
-import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.springframework.data.annotation.Id;
+import org.springframework.data.geo.Point;
 import org.springframework.data.solr.AbstractITestWithEmbeddedSolrServer;
 import org.springframework.data.solr.core.SolrTemplate;
-import org.springframework.data.solr.core.geo.GeoLocation;
+import org.springframework.data.solr.core.mapping.Indexed;
 import org.springframework.data.solr.core.query.Criteria;
 import org.springframework.data.solr.core.query.Query;
 import org.springframework.data.solr.core.query.SimpleQuery;
 import org.springframework.data.solr.core.query.SimpleStringCriteria;
+import org.springframework.data.solr.core.query.result.ScoredPage;
+import org.springframework.data.solr.repository.Score;
 import org.xml.sax.SAXException;
 
 /**
  * @author Christoph Strobl
+ * @author Francisco Spaeth
  */
 public class ITestMappingSolrConverter extends AbstractITestWithEmbeddedSolrServer {
 
@@ -52,6 +59,7 @@ public class ITestMappingSolrConverter extends AbstractITestWithEmbeddedSolrServ
 	@Before
 	public void setUp() throws IOException, ParserConfigurationException, SAXException {
 		solrTemplate = new SolrTemplate(solrServer, null);
+		solrTemplate.afterPropertiesSet();
 	}
 
 	@After
@@ -60,16 +68,19 @@ public class ITestMappingSolrConverter extends AbstractITestWithEmbeddedSolrServ
 		solrTemplate.commit();
 	}
 
+	/**
+	 * @see DATASOLR-142
+	 */
 	@Test
-	public void convertsGeoLocationCorrectly() {
-		BeanWithGeoLocation bean = new BeanWithGeoLocation();
+	public void convertsPointCorrectly() {
+		BeanWithPoint bean = new BeanWithPoint();
 		bean.id = DEFAULT_BEAN_ID;
-		bean.location = new GeoLocation(48.30975D, 14.28435D);
+		bean.location = new Point(48.30975D, 14.28435D);
 
-		BeanWithGeoLocation loaded = saveAndLoad(bean);
+		BeanWithPoint loaded = saveAndLoad(bean);
 
-		Assert.assertEquals(bean.location.getLatitude(), loaded.location.getLatitude(), 0.0F);
-		Assert.assertEquals(bean.location.getLongitude(), loaded.location.getLongitude(), 0.0F);
+		assertEquals(bean.location.getX(), loaded.location.getX(), 0.0F);
+		assertEquals(bean.location.getY(), loaded.location.getY(), 0.0F);
 	}
 
 	@Test
@@ -80,7 +91,7 @@ public class ITestMappingSolrConverter extends AbstractITestWithEmbeddedSolrServ
 
 		BeanWithJodaDateTime loaded = saveAndLoad(bean);
 
-		Assert.assertThat(loaded.manufactured, IsEqual.equalTo(bean.manufactured));
+		assertThat(loaded.manufactured, equalTo(bean.manufactured));
 	}
 
 	@Test
@@ -91,7 +102,7 @@ public class ITestMappingSolrConverter extends AbstractITestWithEmbeddedSolrServ
 
 		BeanWithJodaLocalDateTime loaded = saveAndLoad(bean);
 
-		Assert.assertThat(loaded.manufactured, IsEqual.equalTo(bean.manufactured));
+		assertThat(loaded.manufactured, equalTo(bean.manufactured));
 	}
 
 	@Test
@@ -102,7 +113,7 @@ public class ITestMappingSolrConverter extends AbstractITestWithEmbeddedSolrServ
 
 		BeanWithList loaded = saveAndLoad(bean);
 
-		Assert.assertThat(loaded.categories, IsEqual.equalTo(bean.categories));
+		assertThat(loaded.categories, equalTo(bean.categories));
 	}
 
 	@Test
@@ -113,8 +124,8 @@ public class ITestMappingSolrConverter extends AbstractITestWithEmbeddedSolrServ
 
 		BeanWithBaseClass loaded = saveAndLoad(bean);
 
-		Assert.assertEquals(bean.id, loaded.id);
-		Assert.assertEquals(bean.name, loaded.name);
+		assertEquals(bean.id, loaded.id);
+		assertEquals(bean.name, loaded.name);
 	}
 
 	@Test
@@ -125,14 +136,42 @@ public class ITestMappingSolrConverter extends AbstractITestWithEmbeddedSolrServ
 
 		BeanWithEnum loaded = saveAndLoad(bean);
 
-		Assert.assertEquals(bean.id, loaded.id);
-		Assert.assertEquals(bean.enumProperty, loaded.enumProperty);
+		assertEquals(bean.id, loaded.id);
+		assertEquals(bean.enumProperty, loaded.enumProperty);
 
 		Query query = new SimpleQuery(new Criteria("enumProperty_s").is(LiteralNumberEnum.TWO));
 
 		BeanWithEnum loadedViaProperty = solrTemplate.queryForObject(query, BeanWithEnum.class);
-		Assert.assertEquals(bean.id, loadedViaProperty.id);
-		Assert.assertEquals(bean.enumProperty, loadedViaProperty.enumProperty);
+		assertEquals(bean.id, loadedViaProperty.id);
+		assertEquals(bean.enumProperty, loadedViaProperty.enumProperty);
+	}
+
+	/**
+	 * @see DATASOLR-210
+	 */
+	@Test
+	public void testProcessesScoreCorrectly() {
+
+		Collection<BeanWithScore> beans = new ArrayList<BeanWithScore>();
+		beans.add(new BeanWithScore("1", "spring"));
+		beans.add(new BeanWithScore("2", "spring data solr"));
+		beans.add(new BeanWithScore("3", "apache solr"));
+		beans.add(new BeanWithScore("4", "apache lucene"));
+
+		solrTemplate.saveBeans(beans);
+		solrTemplate.commit();
+
+		ScoredPage<BeanWithScore> page = solrTemplate.queryForPage(new SimpleQuery("description:spring solr"),
+				BeanWithScore.class);
+
+		List<BeanWithScore> content = page.getContent();
+		assertEquals(3, page.getTotalElements());
+		assertEquals(Float.valueOf(0.9105287f), content.get(0).score);
+		assertEquals("spring data solr", content.get(0).description);
+		assertEquals(Float.valueOf(0.45526436f), content.get(1).score);
+		assertEquals("spring", content.get(1).description);
+		assertEquals(Float.valueOf(0.28454024f), content.get(2).score);
+		assertEquals("apache solr", content.get(2).description);
 	}
 
 	@SuppressWarnings("unchecked")
@@ -143,65 +182,59 @@ public class ITestMappingSolrConverter extends AbstractITestWithEmbeddedSolrServ
 		return (T) solrTemplate.queryForObject(DEFAULT_BEAN_OBJECT_QUERY, o.getClass());
 	}
 
-	private static class BeanWithGeoLocation {
+	private static class BeanWithPoint {
 
-		@SuppressWarnings("unused")
-		@Id
-		@Field
-		private String id;
+		@Id//
+		@Field private String id;
 
-		@Field("store")
-		private GeoLocation location;
+		@Field("store")//
+		private Point location;
 
 	}
 
 	private static class BeanWithJodaDateTime {
 
-		@SuppressWarnings("unused")
-		@Id
-		@Field
+		@Id//
+		@Field//
 		private String id;
 
-		@Field("manufacturedate_dt")
+		@Field("manufacturedate_dt")//
 		private DateTime manufactured;
 
 	}
 
 	private static class BeanWithJodaLocalDateTime {
 
-		@SuppressWarnings("unused")
-		@Id
-		@Field
+		@Id//
+		@Field//
 		private String id;
 
-		@Field("manufacturedate_dt")
+		@Field("manufacturedate_dt")//
 		private LocalDateTime manufactured;
 
 	}
 
 	private static class BeanWithList {
 
-		@SuppressWarnings("unused")
-		@Id
-		@Field
+		@Id//
+		@Field//
 		private String id;
 
-		@Field("cat")
+		@Field("cat")//
 		private List<String> categories;
 
 	}
 
 	private static class BeanBaseClass {
 
-		@Id
-		@Field
+		@Id @Field//
 		protected String id;
 
 	}
 
 	private static class BeanWithBaseClass extends BeanBaseClass {
 
-		@Field("name")
+		@Field("name")//
 		private String name;
 
 	}
@@ -212,13 +245,28 @@ public class ITestMappingSolrConverter extends AbstractITestWithEmbeddedSolrServ
 
 	private static class BeanWithEnum {
 
-		@Id
-		@Field
+		@Id @Field//
 		private String id;
 
-		@Field("enumProperty_s")
+		@Field("enumProperty_s")//
 		private LiteralNumberEnum enumProperty;
 
 	}
 
+	private static class BeanWithScore {
+		@Id @Field//
+		private String id;
+
+		@Indexed(type = "text")//
+		private String description;
+
+		@Score//
+		private Float score;
+
+		public BeanWithScore(String id, String description) {
+			this.id = id;
+			this.description = description;
+		}
+
+	}
 }

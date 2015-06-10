@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2015 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,40 +23,55 @@ import org.springframework.context.ApplicationContextAware;
 import org.springframework.context.expression.BeanFactoryAccessor;
 import org.springframework.context.expression.BeanFactoryResolver;
 import org.springframework.data.mapping.PersistentEntity;
+import org.springframework.data.mapping.PropertyHandler;
 import org.springframework.data.mapping.model.BasicPersistentEntity;
+import org.springframework.data.mapping.model.MappingException;
+import org.springframework.data.solr.repository.Score;
 import org.springframework.data.util.TypeInformation;
 import org.springframework.expression.spel.support.StandardEvaluationContext;
 import org.springframework.util.StringUtils;
 
 /**
- * Solr specific {@link PersistentEntity} implementation holding eg. name of solr core
+ * Solr specific {@link PersistentEntity} implementation holding eg. name of solr core.
  * 
  * @param <T>
  * @author Christoph Strobl
+ * @author Francisco Spaeth
  */
 public class SimpleSolrPersistentEntity<T> extends BasicPersistentEntity<T, SolrPersistentProperty> implements
 		SolrPersistentEntity<T>, ApplicationContextAware {
 
+	private final TypeInformation<T> typeInformation;
 	private final StandardEvaluationContext context;
 	private String solrCoreName;
+	private Float boost;
 
 	public SimpleSolrPersistentEntity(TypeInformation<T> typeInformation) {
+
 		super(typeInformation);
 		this.context = new StandardEvaluationContext();
-		this.solrCoreName = derivateSolrCoreNameFromClass(typeInformation.getType());
+		this.typeInformation = typeInformation;
+		this.solrCoreName = derivateSolrCoreName();
+		this.boost = derivateDocumentBoost();
 	}
 
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.context.ApplicationContextAware#setApplicationContext(org.springframework.context.ApplicationContext)
+	 */
 	@Override
 	public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
+
 		context.addPropertyAccessor(new BeanFactoryAccessor());
 		context.setBeanResolver(new BeanFactoryResolver(applicationContext));
 		context.setRootObject(applicationContext);
 	}
 
-	private String derivateSolrCoreNameFromClass(Class<?> clazz) {
-		String derivativeSolrCoreName = clazz.getSimpleName().toLowerCase(Locale.ENGLISH);
-		if (clazz.isAnnotationPresent(SolrDocument.class)) {
-			SolrDocument solrDocument = clazz.getAnnotation(SolrDocument.class);
+	private String derivateSolrCoreName() {
+
+		String derivativeSolrCoreName = this.typeInformation.getType().getSimpleName().toLowerCase(Locale.ENGLISH);
+		SolrDocument solrDocument = findAnnotation(SolrDocument.class);
+		if (solrDocument != null) {
 			if (StringUtils.hasText(solrDocument.solrCoreName())) {
 				derivativeSolrCoreName = solrDocument.solrCoreName();
 			}
@@ -64,9 +79,107 @@ public class SimpleSolrPersistentEntity<T> extends BasicPersistentEntity<T, Solr
 		return derivativeSolrCoreName;
 	}
 
+	private Float derivateDocumentBoost() {
+
+		SolrDocument solrDocument = findAnnotation(SolrDocument.class);
+		if (solrDocument != null && !Float.isNaN(solrDocument.boost())) {
+			return solrDocument.boost();
+		}
+		return null;
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.data.solr.core.mapping.SolrPersistentEntity#getSolrCoreName()
+	 */
 	@Override
 	public String getSolrCoreName() {
 		return this.solrCoreName;
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.data.solr.core.mapping.SolrPersistentEntity#isBoosted()
+	 */
+	@Override
+	public boolean isBoosted() {
+		return boost != null;
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.data.solr.core.mapping.SolrPersistentEntity#getBoost()
+	 */
+	@Override
+	public Float getBoost() {
+		return boost;
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.data.solr.core.mapping.SolrPersistentEntity#hasScoreProperty()
+	 */
+	@Override
+	public boolean hasScoreProperty() {
+		return getScoreProperty() != null;
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.data.solr.core.mapping.SolrPersistentEntity#getScoreProperty()
+	 */
+	@Override
+	public SolrPersistentProperty getScoreProperty() {
+		return getPersistentProperty(Score.class);
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.data.mapping.model.BasicPersistentEntity#verify()
+	 */
+	@Override
+	public void verify() {
+
+		super.verify();
+		verifyScoreFieldUniqueness();
+	}
+
+	private void verifyScoreFieldUniqueness() {
+		doWithProperties(new ScoreFieldUniquenessHandler());
+	}
+
+	/**
+	 * Handler to inspect {@link SolrPersistentProperty} instances and check that max one can be mapped as {@link Score}
+	 * property.
+	 * 
+	 * @author Christpoh Strobl
+	 * @since 1.4
+	 */
+	private static class ScoreFieldUniquenessHandler implements PropertyHandler<SolrPersistentProperty> {
+
+		private static final String AMBIGUOUS_FIELD_MAPPING = "Ambiguous score field mapping detected! Both %s and %s marked as target for score value. Disambiguate using @Score annotation!";
+		private SolrPersistentProperty scoreProperty;
+
+		/*
+		 * (non-Javadoc)
+		 * @see org.springframework.data.mapping.PropertyHandler#doWithPersistentProperty(org.springframework.data.mapping.PersistentProperty)
+		 */
+		public void doWithPersistentProperty(SolrPersistentProperty persistentProperty) {
+			assertUniqueness(persistentProperty);
+		}
+
+		private void assertUniqueness(SolrPersistentProperty property) {
+
+			if (property.isScoreProperty()) {
+
+				if (scoreProperty != null) {
+					throw new MappingException(String.format(AMBIGUOUS_FIELD_MAPPING, property.getFieldName(),
+							scoreProperty.getFieldName()));
+				}
+
+				scoreProperty = property;
+			}
+		}
 	}
 
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ package org.springframework.data.solr.repository.query;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 import org.hamcrest.collection.IsEmptyCollection;
 import org.hamcrest.core.IsEqual;
@@ -29,13 +30,17 @@ import org.springframework.data.repository.core.support.DefaultRepositoryMetadat
 import org.springframework.data.solr.core.mapping.SimpleSolrMappingContext;
 import org.springframework.data.solr.repository.Facet;
 import org.springframework.data.solr.repository.Highlight;
+import org.springframework.data.solr.repository.Pivot;
 import org.springframework.data.solr.repository.ProductBean;
 import org.springframework.data.solr.repository.Query;
+import org.springframework.data.solr.repository.SelectiveStats;
+import org.springframework.data.solr.repository.Stats;
 import org.springframework.data.solr.repository.support.SolrEntityInformationCreatorImpl;
 
 /**
  * @author Christoph Strobl
  * @author Andrey Paramonov
+ * @author Francisco Spaeth
  */
 public class SolrQueryMethodTests {
 
@@ -142,6 +147,83 @@ public class SolrQueryMethodTests {
 		Assert.assertFalse(method.hasFilterQuery());
 
 		Assert.assertEquals(2, method.getFacetFields().size());
+		Assert.assertEquals(Integer.valueOf(25), method.getFacetLimit());
+		Assert.assertEquals(Integer.valueOf(3), method.getFacetMinCount());
+	}
+
+	@Test
+	public void testWithSingleFieldPivot() throws Exception {
+		SolrQueryMethod method = getQueryMethodByName("findByNamePivotOnField1VsField2");
+		Assert.assertFalse(method.hasAnnotatedQuery());
+		Assert.assertFalse(method.hasProjectionFields());
+		Assert.assertFalse(method.hasAnnotatedNamedQueryName());
+		Assert.assertFalse(method.hasFacetFields());
+		Assert.assertTrue(method.hasPivotFields());
+		Assert.assertFalse(method.hasFacetQueries());
+		Assert.assertFalse(method.hasFilterQuery());
+
+		Assert.assertEquals(1, method.getPivotFields().size());
+		Assert.assertEquals(Integer.valueOf(10), method.getFacetLimit());
+		Assert.assertEquals(Integer.valueOf(1), method.getFacetMinCount());
+	}
+
+	@Test
+	public void testWithMultipleFieldPivot() throws Exception {
+		SolrQueryMethod method = getQueryMethodByName("findByNamePivotOnField1VsField2AndField2VsField3");
+		Assert.assertFalse(method.hasAnnotatedQuery());
+		Assert.assertFalse(method.hasProjectionFields());
+		Assert.assertFalse(method.hasFacetFields());
+		Assert.assertTrue(method.hasPivotFields());
+		Assert.assertFalse(method.hasFacetQueries());
+		Assert.assertEquals(2, method.getPivotFields().size());
+		Assert.assertFalse(method.hasAnnotatedNamedQueryName());
+		Assert.assertFalse(method.hasFilterQuery());
+	}
+
+	/**
+	 * @see DATSOLR-155
+	 */
+	@Test
+	public void testWithMultipleFieldPivotUsingPivotAnnotation() throws Exception {
+		SolrQueryMethod method = getQueryMethodByName("findByNamePivotOnField1VsField2AndField2VsField3UsingPivotAnnotation");
+		Assert.assertFalse(method.hasAnnotatedQuery());
+		Assert.assertFalse(method.hasProjectionFields());
+		Assert.assertFalse(method.hasFacetFields());
+		Assert.assertTrue(method.hasPivotFields());
+		Assert.assertFalse(method.hasFacetQueries());
+		Assert.assertEquals(2, method.getPivotFields().size());
+		Assert.assertFalse(method.hasAnnotatedNamedQueryName());
+		Assert.assertFalse(method.hasFilterQuery());
+	}
+
+	/**
+	 * @see DATASOLR-155
+	 */
+	@Test
+	public void testWithMultipleFieldPivotUsingOnlyPivotAnnotation() throws Exception {
+		SolrQueryMethod method = getQueryMethodByName("findByNamePivotOnField1VsField2AndField2VsField3UsingOnlyPivotAnnotation");
+		Assert.assertFalse(method.hasAnnotatedQuery());
+		Assert.assertFalse(method.hasProjectionFields());
+		Assert.assertFalse(method.hasFacetFields());
+		Assert.assertTrue(method.hasPivotFields());
+		Assert.assertFalse(method.hasFacetQueries());
+		Assert.assertEquals(2, method.getPivotFields().size());
+		Assert.assertFalse(method.hasAnnotatedNamedQueryName());
+		Assert.assertFalse(method.hasFilterQuery());
+	}
+
+	@Test
+	public void testWithMultipleFieldPivotsLimitAndMinCount() throws Exception {
+		SolrQueryMethod method = getQueryMethodByName("findByNamePivotOnField1VsField2AndField2VsField3AndLimitAndMinCount");
+		Assert.assertFalse(method.hasAnnotatedQuery());
+		Assert.assertFalse(method.hasProjectionFields());
+		Assert.assertFalse(method.hasFacetFields());
+		Assert.assertTrue(method.hasPivotFields());
+		Assert.assertFalse(method.hasFacetQueries());
+		Assert.assertFalse(method.hasAnnotatedNamedQueryName());
+		Assert.assertFalse(method.hasFilterQuery());
+
+		Assert.assertEquals(2, method.getPivotFields().size());
 		Assert.assertEquals(Integer.valueOf(25), method.getFacetLimit());
 		Assert.assertEquals(Integer.valueOf(3), method.getFacetMinCount());
 	}
@@ -345,6 +427,91 @@ public class SolrQueryMethodTests {
 		Assert.assertEquals("{postfix}", method.getHighlightPostfix());
 	}
 
+	/**
+	 * @see DATASOLR-144
+	 */
+	@Test
+	public void testDeleteAttrbiteOfAnnotatedQueryIsDiscoveredCorrectlty() throws Exception {
+
+		SolrQueryMethod method = getQueryMethodByName("removeByAnnotatedQuery");
+		Assert.assertTrue(method.isDeleteQuery());
+	}
+
+	/**
+	 * @see DATASOLR-144
+	 */
+	@Test
+	public void testDeleteAttrbiteOfAnnotatedQueryIsFalseByDefault() throws Exception {
+
+		SolrQueryMethod method = getQueryMethodByName("findByAnnotatedQuery", String.class);
+		Assert.assertFalse(method.isDeleteQuery());
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testStatsForField() throws Exception {
+
+		SolrQueryMethod method = getQueryMethodByName("findByNameWithFieldStats", String.class);
+		Assert.assertEquals(Arrays.asList("field1"), method.getFieldStats());
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testStatsForFieldAndFacets() throws Exception {
+
+		SolrQueryMethod method = getQueryMethodByName("findByNameWithFieldAndFacetStats", String.class);
+		Assert.assertEquals(Arrays.asList("field1"), method.getFieldStats());
+		Assert.assertEquals(Arrays.asList("field2"), method.getStatsFacets());
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testStatsForSelectiveFacets() throws Exception {
+
+		SolrQueryMethod method = getQueryMethodByName("findByNameWithSelectiveFacetStats", String.class);
+		Map<String, String[]> statsSelectiveFacets = method.getStatsSelectiveFacets();
+		Assert.assertEquals(2, statsSelectiveFacets.size());
+		Assert.assertArrayEquals(new String[] { "field1_1", "field1_2" }, statsSelectiveFacets.get("field1"));
+		Assert.assertArrayEquals(new String[] { "field2_1", "field2_2" }, statsSelectiveFacets.get("field2"));
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testStatsForFieldAndFacetsAndSelectiveFacets() throws Exception {
+
+		SolrQueryMethod method = getQueryMethodByName("findByNameWithFieldStatsAndFacetsStatsAndSelectiveFacetStats",
+				String.class);
+		Assert.assertEquals(Arrays.asList("field1"), method.getFieldStats());
+		Assert.assertEquals(Arrays.asList("field2", "field3"), method.getStatsFacets());
+		Map<String, String[]> statsSelectiveFacets = method.getStatsSelectiveFacets();
+		Assert.assertEquals(1, statsSelectiveFacets.size());
+		Assert.assertArrayEquals(new String[] { "field4_1", "field4_2" }, statsSelectiveFacets.get("field4"));
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testHasStatsDefinition() throws Exception {
+
+		Assert.assertFalse(getQueryMethodByName("findByNameWithEmptyStats", String.class).hasStatsDefinition());
+
+		Assert.assertTrue(getQueryMethodByName("findByNameWithFieldStats", String.class).hasStatsDefinition());
+		Assert.assertTrue(getQueryMethodByName("findByNameWithFieldAndFacetStats", String.class).hasStatsDefinition());
+		Assert.assertTrue(getQueryMethodByName("findByNameWithSelectiveFacetStats", String.class).hasStatsDefinition());
+		Assert
+				.assertTrue(getQueryMethodByName("findByNameWithFieldStatsAndFacetsStatsAndSelectiveFacetStats", String.class)
+						.hasStatsDefinition());
+	}
+
 	private SolrQueryMethod getQueryMethodByName(String name, Class<?>... parameters) throws Exception {
 		Method method = Repo1.class.getMethod(name, parameters);
 		return new SolrQueryMethod(method, new DefaultRepositoryMetadata(Repo1.class), creator);
@@ -411,6 +578,9 @@ public class SolrQueryMethodTests {
 		@Query(requestHandler = "/instock")
 		List<ProductBean> findByText(String text);
 
+		@Query(value = "*:*", delete = true)
+		List<ProductBean> removeByAnnotatedQuery();
+
 		@Highlight
 		List<ProductBean> findByTextLike(String text);
 
@@ -443,6 +613,44 @@ public class SolrQueryMethodTests {
 
 		@Highlight(postfix = "{postfix}")
 		List<ProductBean> findByTextHighlightPostfix(String text);
+
+		@Facet(pivots = { @Pivot({ "field1", "field2" }) })
+		List<ProductBean> findByNamePivotOnField1VsField2();
+
+		@Facet(pivots = { @Pivot({ "field1", "field2" }), @Pivot({ "field2", "field3" }) })
+		List<ProductBean> findByNamePivotOnField1VsField2AndField2VsField3();
+
+		@Facet(pivots = { @Pivot({ "field1", "field2" }), @Pivot({ "field2", "field3" }) }, minCount = 3, limit = 25)
+		List<ProductBean> findByNamePivotOnField1VsField2AndField2VsField3AndLimitAndMinCount();
+
+		@Facet(pivots = { @Pivot({ "field4", "field5" }), @Pivot({ "field5", "field6" }) })
+		List<ProductBean> findByNamePivotOnField1VsField2AndField2VsField3UsingPivotAnnotation();
+
+		@Facet(pivots = { @Pivot({ "field1", "field2" }), @Pivot({ "field2", "field3" }) })
+		List<ProductBean> findByNamePivotOnField1VsField2AndField2VsField3UsingOnlyPivotAnnotation();
+
+		@Stats("field1")
+		List<ProductBean> findByNameWithFieldStats(String name);
+
+		@Stats(value = "field1", facets = "field2")
+		List<ProductBean> findByNameWithFieldAndFacetStats(String name);
+
+		@Stats( //
+				selective = { @SelectiveStats(field = "field1", facets = { "field1_1", "field1_2" }), //
+						@SelectiveStats(field = "field2", facets = { "field2_1", "field2_2" }) //
+				}//
+		)
+		List<ProductBean> findByNameWithSelectiveFacetStats(String name);
+
+		@Stats(//
+				value = "field1", //
+				facets = { "field2", "field3" }, //
+				selective = @SelectiveStats(field = "field4", facets = { "field4_1", "field4_2" }) //
+		)
+		List<ProductBean> findByNameWithFieldStatsAndFacetsStatsAndSelectiveFacetStats(String name);
+
+		@Stats
+		List<ProductBean> findByNameWithEmptyStats(String name);
 	}
 
 }

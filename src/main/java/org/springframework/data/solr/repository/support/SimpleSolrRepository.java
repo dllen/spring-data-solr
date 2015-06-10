@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,17 +27,16 @@ import org.apache.solr.common.SolrInputDocument;
 import org.springframework.dao.InvalidDataAccessApiUsageException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.solr.core.SolrOperations;
+import org.springframework.data.solr.core.SolrTransactionSynchronizationAdapterBuilder;
 import org.springframework.data.solr.core.query.Criteria;
 import org.springframework.data.solr.core.query.SimpleFilterQuery;
 import org.springframework.data.solr.core.query.SimpleQuery;
+import org.springframework.data.solr.core.query.SolrPageRequest;
 import org.springframework.data.solr.repository.SolrCrudRepository;
 import org.springframework.data.solr.repository.query.SolrEntityInformation;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationAdapter;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.Assert;
 
@@ -104,7 +103,7 @@ public class SimpleSolrRepository<T, ID extends Serializable> implements SolrCru
 		if (itemCount == 0) {
 			return new PageImpl<T>(Collections.<T> emptyList());
 		}
-		return this.findAll(new PageRequest(0, Math.max(1, itemCount)));
+		return this.findAll(new SolrPageRequest(0, itemCount));
 	}
 
 	@Override
@@ -122,13 +121,13 @@ public class SimpleSolrRepository<T, ID extends Serializable> implements SolrCru
 		}
 		return getSolrOperations().queryForPage(
 				new SimpleQuery(new Criteria(Criteria.WILDCARD).expression(Criteria.WILDCARD)).setPageRequest(
-						new PageRequest(0, Math.max(1, itemCount))).addSort(sort), getEntityClass());
+						new SolrPageRequest(0, itemCount)).addSort(sort), getEntityClass());
 	}
 
 	@Override
 	public Iterable<T> findAll(Iterable<ID> ids) {
 		org.springframework.data.solr.core.query.Query query = new SimpleQuery(new Criteria(this.idFieldName).in(ids));
-		query.setPageRequest(new PageRequest(0, Math.max(1, (int) count(query))));
+		query.setPageRequest(new SolrPageRequest(0, (int) count(query)));
 
 		return getSolrOperations().queryForPage(query, getEntityClass());
 	}
@@ -291,31 +290,13 @@ public class SimpleSolrRepository<T, ID extends Serializable> implements SolrCru
 	}
 
 	private void registerTransactionSynchronisationAdapter() {
-		TransactionSynchronizationManager.registerSynchronization(new SolrTransactionSynchronizationAdapter(
-				this.solrOperations));
+		TransactionSynchronizationManager.registerSynchronization(SolrTransactionSynchronizationAdapterBuilder
+				.forOperations(this.solrOperations).withDefaultBehaviour());
 	}
 
 	private void commitIfTransactionSynchronisationIsInactive() {
 		if (!TransactionSynchronizationManager.isSynchronizationActive()) {
 			this.solrOperations.commit();
-		}
-	}
-
-	static class SolrTransactionSynchronizationAdapter extends TransactionSynchronizationAdapter {
-
-		private final SolrOperations solrOperations;
-
-		SolrTransactionSynchronizationAdapter(SolrOperations solrOperations) {
-			super();
-			this.solrOperations = solrOperations;
-		}
-
-		public void afterCompletion(int status) {
-			if (status == TransactionSynchronization.STATUS_COMMITTED) {
-				this.solrOperations.commit();
-			} else if (status == TransactionSynchronization.STATUS_ROLLED_BACK) {
-				this.solrOperations.rollback();
-			}
 		}
 	}
 

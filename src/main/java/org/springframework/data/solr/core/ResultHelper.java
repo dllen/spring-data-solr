@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,24 +29,46 @@ import org.apache.commons.collections.MapUtils;
 import org.apache.commons.lang3.reflect.FieldUtils;
 import org.apache.solr.client.solrj.response.FacetField;
 import org.apache.solr.client.solrj.response.FacetField.Count;
+import org.apache.solr.client.solrj.response.FieldStatsInfo;
+import org.apache.solr.client.solrj.response.Group;
+import org.apache.solr.client.solrj.response.GroupCommand;
+import org.apache.solr.client.solrj.response.GroupResponse;
+import org.apache.solr.client.solrj.response.PivotField;
 import org.apache.solr.client.solrj.response.QueryResponse;
 import org.apache.solr.client.solrj.response.TermsResponse;
 import org.apache.solr.client.solrj.response.TermsResponse.Term;
+import org.apache.solr.common.SolrDocumentList;
+import org.apache.solr.common.util.NamedList;
+import org.springframework.beans.DirectFieldAccessor;
 import org.springframework.core.annotation.AnnotationUtils;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.mapping.model.MappingException;
 import org.springframework.data.repository.util.ClassUtils;
+import org.springframework.data.solr.VersionUtil;
 import org.springframework.data.solr.core.query.FacetQuery;
 import org.springframework.data.solr.core.query.Field;
+import org.springframework.data.solr.core.query.Query;
 import org.springframework.data.solr.core.query.SimpleField;
+import org.springframework.data.solr.core.query.SimplePivotField;
 import org.springframework.data.solr.core.query.result.FacetFieldEntry;
+import org.springframework.data.solr.core.query.result.FacetPivotFieldEntry;
 import org.springframework.data.solr.core.query.result.FacetQueryEntry;
+import org.springframework.data.solr.core.query.result.FieldStatsResult;
+import org.springframework.data.solr.core.query.result.GroupEntry;
+import org.springframework.data.solr.core.query.result.GroupResult;
 import org.springframework.data.solr.core.query.result.HighlightEntry;
 import org.springframework.data.solr.core.query.result.SimpleFacetFieldEntry;
+import org.springframework.data.solr.core.query.result.SimpleFacetPivotEntry;
 import org.springframework.data.solr.core.query.result.SimpleFacetQueryEntry;
+import org.springframework.data.solr.core.query.result.SimpleFieldStatsResult;
+import org.springframework.data.solr.core.query.result.SimpleGroupEntry;
+import org.springframework.data.solr.core.query.result.SimpleGroupResult;
+import org.springframework.data.solr.core.query.result.SimpleStatsResult;
 import org.springframework.data.solr.core.query.result.SimpleTermsFieldEntry;
 import org.springframework.data.solr.core.query.result.SolrResultPage;
+import org.springframework.data.solr.core.query.result.StatsResult;
 import org.springframework.data.solr.core.query.result.TermsFieldEntry;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
@@ -56,11 +78,11 @@ import org.springframework.util.StringUtils;
  * care of non existent and null elements with the response.
  * 
  * @author Christoph Strobl
+ * @author Francisco Spaeth
  */
 final class ResultHelper {
 
-	private ResultHelper() {
-	}
+	private ResultHelper() {}
 
 	static Map<String, List<TermsFieldEntry>> convertTermsQueryResponseToTermsMap(QueryResponse response) {
 		if (response == null || response.getTermsResponse() == null || response.getTermsResponse().getTermMap() == null) {
@@ -106,15 +128,58 @@ final class ResultHelper {
 							}
 						}
 						facetResult.put(field, new SolrResultPage<FacetFieldEntry>(pageEntries, query.getFacetOptions()
-								.getPageable(), facetField.getValueCount()));
+								.getPageable(), facetField.getValueCount(), null));
 					} else {
 						facetResult.put(field, new SolrResultPage<FacetFieldEntry>(Collections.<FacetFieldEntry> emptyList(), query
-								.getFacetOptions().getPageable(), 0));
+								.getFacetOptions().getPageable(), 0, null));
 					}
 				}
 			}
 		}
 		return facetResult;
+	}
+
+	static Map<org.springframework.data.solr.core.query.PivotField, List<FacetPivotFieldEntry>> convertFacetQueryResponseToFacetPivotMap(
+			FacetQuery query, QueryResponse response) {
+
+		if (VersionUtil.isSolr3XAvailable()) {
+			// pivot facets are a solr 4+ Feature
+			return Collections.emptyMap();
+		}
+
+		Map<org.springframework.data.solr.core.query.PivotField, List<FacetPivotFieldEntry>> facetResult = new HashMap<org.springframework.data.solr.core.query.PivotField, List<FacetPivotFieldEntry>>();
+		NamedList<List<PivotField>> facetPivot = response.getFacetPivot();
+		if (facetPivot != null && facetPivot.size() > 0) {
+			for (int i = 0; i < facetPivot.size(); i++) {
+				String name = facetPivot.getName(i);
+				List<PivotField> pivotResult = facetPivot.get(name);
+				facetResult.put(new SimplePivotField(name), convertPivotResult(pivotResult));
+			}
+		}
+
+		return facetResult;
+	}
+
+	private static List<FacetPivotFieldEntry> convertPivotResult(List<PivotField> pivotResult) {
+		if (CollectionUtils.isEmpty(pivotResult)) {
+			return Collections.emptyList();
+		}
+
+		ArrayList<FacetPivotFieldEntry> pivotFieldEntries = new ArrayList<FacetPivotFieldEntry>();
+
+		for (PivotField pivotField : pivotResult) {
+			SimpleFacetPivotEntry pivotFieldEntry = new SimpleFacetPivotEntry(new SimpleField(pivotField.getField()),
+					String.valueOf(pivotField.getValue()), pivotField.getCount());
+
+			List<PivotField> pivot = pivotField.getPivot();
+			if (pivot != null) {
+				pivotFieldEntry.setPivot(convertPivotResult(pivot));
+			}
+
+			pivotFieldEntries.add(pivotFieldEntry);
+		}
+
+		return pivotFieldEntries;
 	}
 
 	static List<FacetQueryEntry> convertFacetQueryResponseToFacetQueryResult(FacetQuery query, QueryResponse response) {
@@ -191,6 +256,128 @@ final class ResultHelper {
 
 	private static boolean hasFacets(FacetQuery query, QueryResponse response) {
 		return query.hasFacetOptions() && response != null;
+	}
+
+	static <T> Map<Object, GroupResult<T>> convertGroupQueryResponseToGroupResultMap(Query query,
+			Map<String, Object> objectNames, QueryResponse response, SolrTemplate solrTemplate, Class<T> clazz) {
+
+		GroupResponse groupResponse = response.getGroupResponse();
+
+		if (groupResponse == null) {
+			return Collections.emptyMap();
+		}
+
+		Map<Object, GroupResult<T>> result = new LinkedHashMap<Object, GroupResult<T>>();
+
+		List<GroupCommand> values = groupResponse.getValues();
+		for (GroupCommand groupCommand : values) {
+
+			List<GroupEntry<T>> groupEntries = new ArrayList<GroupEntry<T>>();
+
+			for (Group group : groupCommand.getValues()) {
+
+				SolrDocumentList documentList = group.getResult();
+				List<T> beans = solrTemplate.convertSolrDocumentListToBeans(documentList, clazz);
+				Page<T> page = new PageImpl<T>(beans, query.getGroupOptions().getPageRequest(), documentList.getNumFound());
+				groupEntries.add(new SimpleGroupEntry<T>(group.getGroupValue(), page));
+			}
+
+			int matches = groupCommand.getMatches();
+			Integer ngroups = groupCommand.getNGroups();
+			String name = groupCommand.getName();
+
+			PageImpl<GroupEntry<T>> page;
+			if (ngroups != null) {
+				page = new PageImpl<GroupEntry<T>>(groupEntries, query.getPageRequest(), ngroups.intValue());
+			} else {
+				page = new PageImpl<GroupEntry<T>>(groupEntries);
+			}
+
+			SimpleGroupResult<T> groupResult = new SimpleGroupResult<T>(matches, ngroups, name, page);
+			result.put(name, groupResult);
+			if (objectNames.containsKey(name)) {
+				result.put(objectNames.get(name), groupResult);
+			}
+		}
+
+		return result;
+	}
+
+	static Map<String, FieldStatsResult> convertFieldStatsInfoToFieldStatsResultMap(
+			Map<String, FieldStatsInfo> fieldStatsInfo) {
+
+		if (fieldStatsInfo == null) {
+			return Collections.emptyMap();
+		}
+
+		Map<String, FieldStatsResult> result = new LinkedHashMap<String, FieldStatsResult>();
+		for (Entry<String, FieldStatsInfo> entry : fieldStatsInfo.entrySet()) {
+
+			FieldStatsInfo value = entry.getValue();
+
+			if (value == null) {
+				result.put(entry.getKey(), new SimpleFieldStatsResult());
+				continue;
+			}
+
+			SimpleFieldStatsResult statsResult = populateStatsResultWithFieldStatsInfo(new SimpleFieldStatsResult(), value);
+
+			statsResult.setCountDistinct(value.getCountDistinct());
+			statsResult.setDistinctValues(value.getDistinctValues());
+
+			Map<String, List<FieldStatsInfo>> facets = value.getFacets();
+
+			if (facets != null) {
+				statsResult.setStatsResults(convertFieldStatsInfoToStatsResultMap(facets));
+			}
+
+			result.put(entry.getKey(), statsResult);
+		}
+
+		return result;
+	}
+
+	private static Map<String, Map<String, StatsResult>> convertFieldStatsInfoToStatsResultMap(
+			Map<String, List<FieldStatsInfo>> statsInfo) {
+
+		Map<String, Map<String, StatsResult>> result = new LinkedHashMap<String, Map<String, StatsResult>>();
+
+		for (Entry<String, List<FieldStatsInfo>> entry : statsInfo.entrySet()) {
+			Map<String, StatsResult> facetStatsValues = new LinkedHashMap<String, StatsResult>();
+
+			for (FieldStatsInfo fieldStatsInfo : entry.getValue()) {
+
+				SimpleStatsResult statsResult = populateStatsResultWithFieldStatsInfo(new SimpleStatsResult(), fieldStatsInfo);
+				facetStatsValues.put(fieldStatsInfo.getName(), statsResult);
+			}
+
+			result.put(entry.getKey(), facetStatsValues);
+		}
+
+		return result;
+	}
+
+	private static <T extends SimpleStatsResult> T populateStatsResultWithFieldStatsInfo(T statsResult,
+			FieldStatsInfo value) {
+
+		statsResult.setMax(value.getMax());
+		statsResult.setMin(value.getMin());
+		statsResult.setCount(value.getCount());
+		statsResult.setMissing(value.getMissing());
+		statsResult.setStddev(value.getStddev());
+		statsResult.setSumOfSquares((Double) new DirectFieldAccessor(value).getPropertyValue("sumOfSquares"));
+
+		Object mean = value.getMean();
+		if (mean instanceof Double) {
+			statsResult.setMean((Double) mean);
+		}
+
+		Object sum = value.getSum();
+		if (sum instanceof Double) {
+			statsResult.setSum((Double) sum);
+		}
+
+		return statsResult;
 	}
 
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,14 +15,8 @@
  */
 package org.springframework.data.solr.core;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Iterator;
-import java.util.List;
-
 import org.apache.solr.client.solrj.SolrQuery;
+import org.apache.solr.client.solrj.SolrRequest;
 import org.apache.solr.client.solrj.SolrServer;
 import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.response.QueryResponse;
@@ -39,44 +33,74 @@ import org.springframework.context.ApplicationContextAware;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.support.PersistenceExceptionTranslator;
-import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.mapping.context.MappingContext;
+import org.springframework.data.solr.SolrRealtimeGetRequest;
 import org.springframework.data.solr.UncategorizedSolrException;
 import org.springframework.data.solr.VersionUtil;
+import org.springframework.data.solr.core.QueryParserBase.NamedObjectsFacetQuery;
+import org.springframework.data.solr.core.QueryParserBase.NamedObjectsHighlightQuery;
+import org.springframework.data.solr.core.QueryParserBase.NamedObjectsQuery;
 import org.springframework.data.solr.core.convert.MappingSolrConverter;
 import org.springframework.data.solr.core.convert.SolrConverter;
 import org.springframework.data.solr.core.mapping.SimpleSolrMappingContext;
+import org.springframework.data.solr.core.mapping.SolrPersistentEntity;
+import org.springframework.data.solr.core.mapping.SolrPersistentProperty;
 import org.springframework.data.solr.core.query.FacetQuery;
 import org.springframework.data.solr.core.query.HighlightQuery;
 import org.springframework.data.solr.core.query.Query;
 import org.springframework.data.solr.core.query.SolrDataQuery;
 import org.springframework.data.solr.core.query.TermsQuery;
+import org.springframework.data.solr.core.query.result.Cursor;
+import org.springframework.data.solr.core.query.result.DelegatingCursor;
 import org.springframework.data.solr.core.query.result.FacetPage;
+import org.springframework.data.solr.core.query.result.GroupPage;
 import org.springframework.data.solr.core.query.result.HighlightPage;
+import org.springframework.data.solr.core.query.result.ScoredPage;
 import org.springframework.data.solr.core.query.result.SolrResultPage;
+import org.springframework.data.solr.core.query.result.StatsPage;
 import org.springframework.data.solr.core.query.result.TermsPage;
 import org.springframework.data.solr.core.query.result.TermsResultPage;
+import org.springframework.data.solr.core.schema.SolrJsonResponse;
+import org.springframework.data.solr.core.schema.SolrPersistentEntitySchemaCreator;
+import org.springframework.data.solr.core.schema.SolrPersistentEntitySchemaCreator.Feature;
+import org.springframework.data.solr.core.schema.SolrSchemaRequest;
 import org.springframework.data.solr.server.SolrServerFactory;
 import org.springframework.data.solr.server.support.HttpSolrServerFactory;
 import org.springframework.util.Assert;
+import org.springframework.util.CollectionUtils;
+
+import java.io.IOException;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Implementation of {@link SolrOperations}
  * 
  * @author Christoph Strobl
  * @author Joachim Uhrlass
+ * @author Francisco Spaeth
+ * @author Sateesh ks
  */
 public class SolrTemplate implements SolrOperations, InitializingBean, ApplicationContextAware {
 
 	private static final Logger LOGGER = LoggerFactory.getLogger(SolrTemplate.class);
 	private static final PersistenceExceptionTranslator EXCEPTION_TRANSLATOR = new SolrExceptionTranslator();
 	private final QueryParsers queryParsers = new QueryParsers();
+	private MappingContext<? extends SolrPersistentEntity<?>, SolrPersistentProperty> mappingContext;
 
 	private ApplicationContext applicationContext;
 	private String solrCore;
 
-	@SuppressWarnings("serial")
-	private static final List<String> ITERABLE_CLASSES = new ArrayList<String>() {
+	@SuppressWarnings("serial") private static final List<String> ITERABLE_CLASSES = new ArrayList<String>() {
 		{
 			add(List.class.getName());
 			add(Collection.class.getName());
@@ -84,9 +108,14 @@ public class SolrTemplate implements SolrOperations, InitializingBean, Applicati
 		}
 	};
 
-	private SolrServerFactory solrServerFactory;
+
+
+
+   private SolrServerFactory solrServerFactory;
 
 	private SolrConverter solrConverter;
+
+	private Set<Feature> schemaCreationFeatures;
 
 	public SolrTemplate(SolrServer solrServer) {
 		this(solrServer, null);
@@ -106,7 +135,6 @@ public class SolrTemplate implements SolrOperations, InitializingBean, Applicati
 		Assert.notNull(solrServerFactory.getSolrServer(), "SolrServerFactory has to return a SolrServer.");
 
 		this.solrServerFactory = solrServerFactory;
-		this.solrConverter = solrConverter == null ? getDefaultSolrConverter() : solrConverter;
 	}
 
 	@Override
@@ -256,7 +284,7 @@ public class SolrTemplate implements SolrOperations, InitializingBean, Applicati
 		Assert.notNull(clazz, "Target class must not be 'null'.");
 
 		query.setPageRequest(new PageRequest(0, 1));
-		QueryResponse response = query(query);
+		QueryResponse response = query(query, clazz);
 
 		if (response.getResults().size() > 0) {
 			if (response.getResults().size() > 1) {
@@ -267,14 +295,61 @@ public class SolrTemplate implements SolrOperations, InitializingBean, Applicati
 		return null;
 	}
 
+	private <T> SolrResultPage<T> doQueryForPage(Query query, Class<T> clazz, RequestMethod requestMethod) {
+        QueryResponse response=null;
+		NamedObjectsQuery namedObjectsQuery = new NamedObjectsQuery(query);
+        if(null != requestMethod && requestMethod.value().equals(requestMethod.POST)){
+             response = query(namedObjectsQuery, clazz, SolrRequest.METHOD.POST);
+        }else{
+             response = query(namedObjectsQuery, clazz);
+        }
+		Map<String, Object> objectsName = namedObjectsQuery.getNamesAssociation();
+
+		return createSolrResultPage(query, clazz, response, objectsName);
+	}
+
 	@Override
-	public <T> Page<T> queryForPage(Query query, Class<T> clazz) {
+	public <T> ScoredPage<T> queryForPage(Query query, Class<T> clazz) {
 		Assert.notNull(query, "Query must not be 'null'.");
 		Assert.notNull(clazz, "Target class must not be 'null'.");
 
-		QueryResponse response = query(query);
-		List<T> beans = convertQueryResponseToBeans(response, clazz);
-		return new SolrResultPage<T>(beans, query.getPageRequest(), response.getResults().getNumFound());
+		return doQueryForPage(query, clazz,null);
+	}
+
+    /**
+     * Execute the query against solr and retrun result as {@link Page}
+     *
+     * @param query
+     * @param clazz
+     * @param method  - HTTP METHOD get or post
+     * @return
+     */
+    @Override
+    public <T> ScoredPage<T> queryForPage(Query query, Class<T> clazz, RequestMethod method) {
+        Assert.notNull(query, "Query must not be 'null'.");
+        Assert.notNull(clazz, "Target class must not be 'null'.");
+
+        return doQueryForPage(query, clazz,method);
+    }
+
+    @Override
+	public <T> GroupPage<T> queryForGroupPage(Query query, Class<T> clazz) {
+		Assert.notNull(query, "Query must not be 'null'.");
+		Assert.notNull(clazz, "Target class must not be 'null'.");
+
+		return doQueryForPage(query, clazz,null);
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.data.solr.core.SolrOperations#queryForStatsPage(org.springframework.data.solr.core.query.Query, java.lang.Class)
+	 */
+	@Override
+	public <T> StatsPage<T> queryForStatsPage(Query query, Class<T> clazz) {
+		Assert.notNull(query, "Query must not be 'null'.");
+		Assert.notNull(clazz, "Target class must not be 'null'.");
+
+		return doQueryForPage(query, clazz,null);
 	}
 
 	@Override
@@ -282,11 +357,14 @@ public class SolrTemplate implements SolrOperations, InitializingBean, Applicati
 		Assert.notNull(query, "Query must not be 'null'.");
 		Assert.notNull(clazz, "Target class must not be 'null'.");
 
-		QueryResponse response = query(query);
+		NamedObjectsFacetQuery namedObjectsQuery = new NamedObjectsFacetQuery(query);
+		QueryResponse response = query(namedObjectsQuery, clazz);
+		Map<String, Object> objectsName = namedObjectsQuery.getNamesAssociation();
 
-		List<T> beans = convertQueryResponseToBeans(response, clazz);
-		SolrResultPage<T> page = new SolrResultPage<T>(beans, query.getPageRequest(), response.getResults().getNumFound());
+		SolrResultPage<T> page = createSolrResultPage(query, clazz, response, objectsName);
+
 		page.addAllFacetFieldResultPages(ResultHelper.convertFacetQueryResponseToFacetPageMap(query, response));
+		page.addAllFacetPivotFieldResult(ResultHelper.convertFacetQueryResponseToFacetPivotMap(query, response));
 		page.setFacetQueryResultPage(ResultHelper.convertFacetQueryResponseToFacetQueryResult(query, response));
 
 		return page;
@@ -297,11 +375,32 @@ public class SolrTemplate implements SolrOperations, InitializingBean, Applicati
 		Assert.notNull(query, "Query must not be 'null'.");
 		Assert.notNull(clazz, "Target class must not be 'null'.");
 
-		QueryResponse response = query(query);
+		NamedObjectsHighlightQuery namedObjectsQuery = new NamedObjectsHighlightQuery(query);
+		QueryResponse response = query(namedObjectsQuery, clazz);
 
-		List<T> beans = convertQueryResponseToBeans(response, clazz);
-		SolrResultPage<T> page = new SolrResultPage<T>(beans, query.getPageRequest(), response.getResults().getNumFound());
+		Map<String, Object> objectsName = namedObjectsQuery.getNamesAssociation();
+
+		SolrResultPage<T> page = createSolrResultPage(query, clazz, response, objectsName);
+
 		ResultHelper.convertAndAddHighlightQueryResponseToResultPage(response, page);
+
+		return page;
+	}
+
+	private <T> SolrResultPage<T> createSolrResultPage(Query query, Class<T> clazz, QueryResponse response,
+			Map<String, Object> objectsName) {
+		List<T> beans = convertQueryResponseToBeans(response, clazz);
+		SolrDocumentList results = response.getResults();
+		long numFound = results == null ? 0 : results.getNumFound();
+		Float maxScore = results == null ? null : results.getMaxScore();
+
+		Pageable pageRequest = query.getPageRequest();
+
+		SolrResultPage<T> page = new SolrResultPage<T>(beans, pageRequest, numFound, maxScore);
+
+		page.setFieldStatsResults(ResultHelper.convertFieldStatsInfoToFieldStatsResultMap(response.getFieldStatsInfo()));
+		page.setGroupResults(ResultHelper.convertGroupQueryResponseToGroupResultMap(query, objectsName, response, this,
+				clazz));
 
 		return page;
 	}
@@ -310,30 +409,65 @@ public class SolrTemplate implements SolrOperations, InitializingBean, Applicati
 	public TermsPage queryForTermsPage(TermsQuery query) {
 		Assert.notNull(query, "Query must not be 'null'.");
 
-		QueryResponse response = query(query);
+		QueryResponse response = query(query, null);
 
 		TermsResultPage page = new TermsResultPage();
 		page.addAllTerms(ResultHelper.convertTermsQueryResponseToTermsMap(response));
 		return page;
 	}
 
-	final QueryResponse query(SolrDataQuery query) {
+	final QueryResponse query(SolrDataQuery query, Class<?> clazz) {
 		Assert.notNull(query, "Query must not be 'null'");
 
 		SolrQuery solrQuery = queryParsers.getForClass(query.getClass()).constructSolrQuery(query);
+
+		if (clazz != null) {
+			SolrPersistentEntity<?> persistedEntity = mappingContext.getPersistentEntity(clazz);
+			if (persistedEntity.hasScoreProperty()) {
+				solrQuery.setIncludeScore(true);
+			}
+		}
+
 		LOGGER.debug("Executing query '" + solrQuery + "' against solr.");
 
 		return executeSolrQuery(solrQuery);
 	}
 
+    final QueryResponse query(SolrDataQuery query, Class<?> clazz,SolrRequest.METHOD method) {
+        Assert.notNull(query, "Query must not be 'null'");
+
+        SolrQuery solrQuery = queryParsers.getForClass(query.getClass()).constructSolrQuery(query);
+
+        if (clazz != null) {
+            SolrPersistentEntity<?> persistedEntity = mappingContext.getPersistentEntity(clazz);
+            if (persistedEntity.hasScoreProperty()) {
+                solrQuery.setIncludeScore(true);
+            }
+        }
+
+        LOGGER.debug("Executing query '" + solrQuery + "' against solr.");
+
+        return executeSolrQuery(solrQuery,method);
+    }
+
+
 	final QueryResponse executeSolrQuery(final SolrQuery solrQuery) {
-		return execute(new SolrCallback<QueryResponse>() {
-			@Override
-			public QueryResponse doInSolr(SolrServer solrServer) throws SolrServerException, IOException {
-				return solrServer.query(solrQuery);
-			}
-		});
-	}
+        return execute(new SolrCallback<QueryResponse>() {
+            @Override
+            public QueryResponse doInSolr(SolrServer solrServer) throws SolrServerException, IOException {
+                return solrServer.query(solrQuery);
+            }
+        });
+    }
+
+    final QueryResponse executeSolrQuery(final SolrQuery solrQuery,final SolrRequest.METHOD method) {
+        return execute(new SolrCallback<QueryResponse>() {
+            @Override
+            public QueryResponse doInSolr(SolrServer solrServer) throws SolrServerException, IOException {
+                return solrServer.query(solrQuery,method );
+            }
+        });
+    }
 
 	@Override
 	public void commit() {
@@ -380,6 +514,78 @@ public class SolrTemplate implements SolrOperations, InitializingBean, Applicati
 		return document;
 	}
 
+	/**
+	 * @param collectionName
+	 * @return
+	 * @since 1.3
+	 */
+	public String getSchemaName(String collectionName) {
+		return execute(new SolrCallback<String>() {
+
+			@Override
+			public String doInSolr(SolrServer solrServer) throws SolrServerException, IOException {
+				SolrJsonResponse response = SolrSchemaRequest.name().process(solrServer);
+				if (response != null) {
+					return response.getNode("name").asText();
+				}
+				return null;
+			}
+		});
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.data.solr.core.SolrOperations#queryForCursor(org.springframework.data.solr.core.query.Query, java.lang.Class)
+	 */
+	public <T> Cursor<T> queryForCursor(Query query, final Class<T> clazz) {
+
+		return new DelegatingCursor<T>(queryParsers.getForClass(query.getClass()).constructSolrQuery(query)) {
+
+			@Override
+			protected org.springframework.data.solr.core.query.result.DelegatingCursor.PartialResult<T> doLoad(
+					SolrQuery nativeQuery) {
+
+				QueryResponse response = executeSolrQuery(nativeQuery);
+				if (response == null) {
+					return new PartialResult<T>("", Collections.<T> emptyList());
+				}
+
+				return new PartialResult<T>(response.getNextCursorMark(), convertQueryResponseToBeans(response, clazz));
+			}
+
+		}.open();
+	}
+
+	@Override
+	public <T> Collection<T> getById(final Collection<? extends Serializable> ids, final Class<T> clazz) {
+
+		if (CollectionUtils.isEmpty(ids)) {
+			return Collections.emptyList();
+		}
+
+		return execute(new SolrCallback<Collection<T>>() {
+			@Override
+			public Collection<T> doInSolr(SolrServer solrServer) throws SolrServerException, IOException {
+
+				QueryResponse response = new SolrRealtimeGetRequest(ids).process(solrServer);
+				return convertSolrDocumentListToBeans(response.getResults(), clazz);
+			}
+
+		});
+	}
+
+	@Override
+	public <T> T getById(Serializable id, Class<T> clazz) {
+
+		Assert.notNull(id, "Id must not be 'null'.");
+
+		Collection<T> result = getById(Collections.singletonList(id), clazz);
+		if (result.isEmpty()) {
+			return null;
+		}
+		return result.iterator().next();
+	}
+
 	private Collection<SolrInputDocument> convertBeansToSolrInputDocuments(Iterable<?> beans) {
 		if (beans == null) {
 			return Collections.emptyList();
@@ -415,7 +621,7 @@ public class SolrTemplate implements SolrOperations, InitializingBean, Applicati
 	}
 
 	private final SolrConverter getDefaultSolrConverter() {
-		MappingSolrConverter converter = new MappingSolrConverter(new SimpleSolrMappingContext());
+		MappingSolrConverter converter = new MappingSolrConverter(this.mappingContext);
 		converter.afterPropertiesSet(); // have to call this one to initialize default converters
 		return converter;
 	}
@@ -457,6 +663,12 @@ public class SolrTemplate implements SolrOperations, InitializingBean, Applicati
 
 	@Override
 	public void afterPropertiesSet() {
+
+		if (this.mappingContext == null) {
+			this.mappingContext = new SimpleSolrMappingContext(
+					new SolrPersistentEntitySchemaCreator(this.solrServerFactory).enable(this.schemaCreationFeatures));
+		}
+
 		if (this.solrConverter == null) {
 			this.solrConverter = getDefaultSolrConverter();
 		}
@@ -471,6 +683,34 @@ public class SolrTemplate implements SolrOperations, InitializingBean, Applicati
 						"solrExceptionTranslator", EXCEPTION_TRANSLATOR);
 			}
 		}
+	}
+
+	/**
+	 * @since 1.3
+	 * @param mappingContext
+	 */
+	public void setMappingContext(MappingContext<? extends SolrPersistentEntity<?>, SolrPersistentProperty> mappingContext) {
+		this.mappingContext = mappingContext;
+	}
+
+	/**
+	 * @since 1.3
+	 * @param schemaCreationFeatures
+	 */
+	public void setSchemaCreationFeatures(Collection<Feature> schemaCreationFeatures) {
+		this.schemaCreationFeatures = new HashSet<Feature>(schemaCreationFeatures);
+	}
+
+	/**
+	 * @since 1.3
+	 * @return
+	 */
+	public Set<Feature> getSchemaCreationFeatures() {
+
+		if (CollectionUtils.isEmpty(this.schemaCreationFeatures)) {
+			return Collections.emptySet();
+		}
+		return Collections.unmodifiableSet(this.schemaCreationFeatures);
 	}
 
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.data.convert.ReadingConverter;
 import org.springframework.data.convert.WritingConverter;
+import org.springframework.data.geo.Metrics;
 
 /**
  * @author Christoph Strobl
@@ -26,55 +27,98 @@ import org.springframework.data.convert.WritingConverter;
 public final class GeoConverters {
 
 	/**
-	 * Converts a {@link GeoLocation} to a solrReadable request parameter.
+	 * Converts a {@link Point} to a solrReadable request parameter.
 	 */
 	@WritingConverter
-	public enum GeoLocationToStringConverter implements Converter<GeoLocation, String> {
+	public enum Point2DToStringConverter implements Converter<org.springframework.data.geo.Point, String> {
 		INSTANCE;
 
 		@Override
-		public String convert(GeoLocation source) {
+		public String convert(org.springframework.data.geo.Point source) {
 			if (source == null) {
 				return null;
 			}
-			return StringUtils.stripEnd(String.format(java.util.Locale.ENGLISH, "%f", source.getLatitude()), "0") + ","
-					+ StringUtils.stripEnd(String.format(java.util.Locale.ENGLISH, "%f", source.getLongitude()), "0");
+			if (source instanceof Point) {
+				return Point3DToStringConverter.INSTANCE.convert((Point) source);
+			}
+			String formattedString = StringUtils.stripEnd(String.format(java.util.Locale.ENGLISH, "%f", source.getX()), "0")
+					+ "," + StringUtils.stripEnd(String.format(java.util.Locale.ENGLISH, "%f", source.getY()), "0");
+
+			if (formattedString.endsWith(".")) {
+				return formattedString.replace(".", ".0");
+			}
+			return formattedString;
 		}
 	}
 
 	/**
-	 * Converts comma separated string to {@link GeoLocation}
+	 * Converts comma separated string to {@link org.springframework.data.geo.Point}.
+	 * 
+	 * @since 1.2
 	 */
 	@ReadingConverter
-	public enum StringToGeoLocationConverter implements Converter<String, GeoLocation> {
+	public enum StringToPointConverter implements Converter<String, org.springframework.data.geo.Point> {
 		INSTANCE;
 
 		@Override
-		public GeoLocation convert(String source) {
+		public org.springframework.data.geo.Point convert(String source) {
 			if (source == null) {
 				return null;
 			}
 
 			String[] coordinates = source.split(",");
-			return new GeoLocation(Double.parseDouble(coordinates[0]), Double.parseDouble(coordinates[1]));
+			return new org.springframework.data.geo.Point(Double.parseDouble(coordinates[0]),
+					Double.parseDouble(coordinates[1]));
 		}
 
 	}
 
 	/**
-	 * Converts a {@link Distance} to a solrReadable request parameter.
-	 * 
+	 * Converts a {@link org.springframework.data.geo.Distance} to a solrReadable request parameter.
 	 */
 	@WritingConverter
-	public enum DistanceToStringConverter implements Converter<Distance, String> {
+	public enum DistanceToStringConverter implements Converter<org.springframework.data.geo.Distance, String> {
 		INSTANCE;
 
 		@Override
-		public String convert(Distance source) {
+		public String convert(org.springframework.data.geo.Distance source) {
 			if (source == null) {
 				return null;
 			}
-			return String.format(java.util.Locale.ENGLISH, "%s", source.getNormalizedValue());
+			double value = source.getValue();
+			if (source.getMetric() == Metrics.MILES) {
+				value = source.getValue() * 1.609344D;
+			}
+			return String.format(java.util.Locale.ENGLISH, "%s", value);
 		}
+	}
+
+	/**
+	 * Converts a {@link Point} to a solrReadable request parameter.
+	 * 
+	 * @since 1.1
+	 */
+	public enum Point3DToStringConverter implements Converter<org.springframework.data.geo.Point, String> {
+		INSTANCE;
+
+		@Override
+		public String convert(org.springframework.data.geo.Point source) {
+			if (source == null) {
+				return null;
+			}
+			String formattedString = StringUtils.stripEnd(String.format(java.util.Locale.ENGLISH, "%f", source.getX()), "0")
+					+ "," + StringUtils.stripEnd(String.format(java.util.Locale.ENGLISH, "%f", source.getY()), "0");
+
+			if (source instanceof Point) {
+				formattedString += (((Point) source).getZ() != null ? ("," + StringUtils.stripEnd(
+						String.format(java.util.Locale.ENGLISH, "%f", ((Point) source).getZ()), "0")) : "");
+			}
+
+			if (formattedString.endsWith(".")) {
+				return formattedString.replace(".", "");
+			}
+			return formattedString;
+		}
+
 	}
 }

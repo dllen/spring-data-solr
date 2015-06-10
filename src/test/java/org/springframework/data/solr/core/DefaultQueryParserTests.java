@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2015 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,8 @@ package org.springframework.data.solr.core;
 
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.Collections;
+import java.util.List;
 import java.util.TimeZone;
 
 import org.apache.commons.lang3.StringUtils;
@@ -25,6 +27,7 @@ import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.params.FacetParams;
 import org.apache.solr.common.params.GroupParams;
 import org.apache.solr.common.params.HighlightParams;
+import org.apache.solr.common.params.StatsParams;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.joda.time.LocalDateTime;
@@ -32,21 +35,23 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.springframework.core.convert.converter.Converter;
-import org.springframework.dao.InvalidDataAccessApiUsageException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
-import org.springframework.data.solr.core.geo.BoundingBox;
-import org.springframework.data.solr.core.geo.Distance;
-import org.springframework.data.solr.core.geo.Distance.Unit;
-import org.springframework.data.solr.core.geo.GeoLocation;
+import org.springframework.data.geo.Box;
+import org.springframework.data.geo.Circle;
+import org.springframework.data.geo.Distance;
+import org.springframework.data.geo.Metrics;
+import org.springframework.data.geo.Point;
 import org.springframework.data.solr.core.query.Criteria;
 import org.springframework.data.solr.core.query.FacetOptions;
 import org.springframework.data.solr.core.query.FacetOptions.FacetParameter;
 import org.springframework.data.solr.core.query.FacetOptions.FacetSort;
 import org.springframework.data.solr.core.query.FacetOptions.FieldWithFacetParameters;
 import org.springframework.data.solr.core.query.FacetQuery;
+import org.springframework.data.solr.core.query.GroupOptions;
 import org.springframework.data.solr.core.query.HighlightOptions;
 import org.springframework.data.solr.core.query.Join;
+import org.springframework.data.solr.core.query.MaxFunction;
 import org.springframework.data.solr.core.query.Query;
 import org.springframework.data.solr.core.query.Query.Operator;
 import org.springframework.data.solr.core.query.SimpleFacetQuery;
@@ -55,6 +60,8 @@ import org.springframework.data.solr.core.query.SimpleFilterQuery;
 import org.springframework.data.solr.core.query.SimpleHighlightQuery;
 import org.springframework.data.solr.core.query.SimpleQuery;
 import org.springframework.data.solr.core.query.SimpleStringCriteria;
+import org.springframework.data.solr.core.query.SolrPageRequest;
+import org.springframework.data.solr.core.query.StatsOptions;
 
 /**
  * @author Christoph Strobl
@@ -62,6 +69,7 @@ import org.springframework.data.solr.core.query.SimpleStringCriteria;
  * @author Rosty Kerei
  * @author Andrey Paramonov
  * @author Philipp Jardas
+ * @author Francisco Spaeth
  */
 public class DefaultQueryParserTests {
 
@@ -152,16 +160,14 @@ public class DefaultQueryParserTests {
 	public void testAnd() {
 		Criteria criteria = new Criteria("field_1").startsWith("start").endsWith("end").and("field_2").startsWith("2start")
 				.endsWith("2end");
-		Assert.assertEquals("field_2", criteria.getField().getName());
 		Assert.assertEquals("field_1:(start* *end) AND field_2:(2start* *2end)",
-				queryParser.createQueryStringFromCriteria(criteria));
+				queryParser.createQueryStringFromNode(criteria));
 	}
 
 	@Test
 	public void testOr() {
 		Criteria criteria = new Criteria("field_1").startsWith("start").or("field_2").endsWith("end").startsWith("start2");
-		Assert
-				.assertEquals("field_1:start* OR field_2:(*end start2*)", queryParser.createQueryStringFromCriteria(criteria));
+		Assert.assertEquals("field_1:start* OR field_2:(*end start2*)", queryParser.createQueryStringFromNode(criteria));
 	}
 
 	@Test
@@ -216,7 +222,7 @@ public class DefaultQueryParserTests {
 	public void testBoostMultipleCriteriasValues() {
 		Criteria criteria = new Criteria("field_1").is("value_1").is("value_2").boost(2f).and("field_3").is("value_3");
 		Assert.assertEquals("field_1:(value_1 value_2)^2.0 AND field_3:value_3",
-				queryParser.createQueryStringFromCriteria(criteria));
+				queryParser.createQueryStringFromNode(criteria));
 	}
 
 	@Test
@@ -310,54 +316,79 @@ public class DefaultQueryParserTests {
 
 	@Test
 	public void testNear() {
-		Criteria criteria = new Criteria("field_1").near(new GeoLocation(48.303056, 14.290556), new Distance(5));
+		Criteria criteria = new Criteria("field_1").near(new Point(48.303056, 14.290556), new Distance(5));
 		Assert.assertEquals("{!bbox pt=48.303056,14.290556 sfield=field_1 d=5.0}",
 				queryParser.createQueryStringFromCriteria(criteria));
 	}
 
+	/**
+	 * @see DATASOLR-142
+	 */
+	@Test(expected = IllegalArgumentException.class)
+	public void testCircleForNearMustNotBeNull() {
+		new Criteria("field_1").near((Circle) null);
+	}
+
 	@Test
 	public void testNearWithDistanceUnitMiles() {
-		Criteria criteria = new Criteria("field_1")
-				.near(new GeoLocation(48.303056, 14.290556), new Distance(1, Unit.MILES));
+		Criteria criteria = new Criteria("field_1").near(new Point(48.303056, 14.290556), new Distance(1, Metrics.MILES));
 		Assert.assertEquals("{!bbox pt=48.303056,14.290556 sfield=field_1 d=1.609344}",
 				queryParser.createQueryStringFromCriteria(criteria));
 	}
 
 	@Test
 	public void testNearWithDistanceUnitKilometers() {
-		Criteria criteria = new Criteria("field_1").near(new GeoLocation(48.303056, 14.290556), new Distance(1,
-				Unit.KILOMETERS));
+		Criteria criteria = new Criteria("field_1").near(new Point(48.303056, 14.290556), new Distance(1,
+				Metrics.KILOMETERS));
 		Assert.assertEquals("{!bbox pt=48.303056,14.290556 sfield=field_1 d=1.0}",
 				queryParser.createQueryStringFromCriteria(criteria));
 	}
 
 	@Test
 	public void testNearWithCoords() {
-		Criteria criteria = new Criteria("field_1").near(new BoundingBox(new GeoLocation(48.303056, 14.290556),
-				new GeoLocation(48.303056, 14.290556)));
+		Criteria criteria = new Criteria("field_1").near(new Box(new Point(48.303056, 14.290556), new Point(48.303056,
+				14.290556)));
 		Assert.assertEquals("field_1:[48.303056,14.290556 TO 48.303056,14.290556]",
 				queryParser.createQueryStringFromCriteria(criteria));
 	}
 
 	@Test
 	public void testWithinWithDistanceUnitMiles() {
-		Criteria criteria = new Criteria("field_1").within(new GeoLocation(48.303056, 14.290556), new Distance(1,
-				Unit.MILES));
+		Criteria criteria = new Criteria("field_1").within(new Point(48.303056, 14.290556), new Distance(1, Metrics.MILES));
 		Assert.assertEquals("{!geofilt pt=48.303056,14.290556 sfield=field_1 d=1.609344}",
 				queryParser.createQueryStringFromCriteria(criteria));
 	}
 
 	@Test
 	public void testWithinWithDistanceUnitKilometers() {
-		Criteria criteria = new Criteria("field_1").within(new GeoLocation(48.303056, 14.290556), new Distance(1,
-				Unit.KILOMETERS));
+		Criteria criteria = new Criteria("field_1").within(new Point(48.303056, 14.290556), new Distance(1,
+				Metrics.KILOMETERS));
+		Assert.assertEquals("{!geofilt pt=48.303056,14.290556 sfield=field_1 d=1.0}",
+				queryParser.createQueryStringFromCriteria(criteria));
+	}
+
+	/**
+	 * @see DATASOLR-142
+	 */
+	@Test(expected = IllegalArgumentException.class)
+	public void testCircleForWithinMustNotBeNull() {
+		new Criteria("field_1").within((Circle) null);
+	}
+
+	/**
+	 * @see DATASOLR-142
+	 */
+	@Test
+	public void testWithinCircleWorksCorrectly() {
+		Criteria criteria = new Criteria("field_1").within(new Circle(new Point(48.303056, 14.290556), new Distance(1,
+				Metrics.KILOMETERS)));
 		Assert.assertEquals("{!geofilt pt=48.303056,14.290556 sfield=field_1 d=1.0}",
 				queryParser.createQueryStringFromCriteria(criteria));
 	}
 
 	@Test
 	public void testWithinWithNullDistance() {
-		Criteria criteria = new Criteria("field_1").within(new GeoLocation(48.303056, 14.290556), null);
+		Criteria criteria = new Criteria("field_1").within(new Point(48.303056, 14.290556), null);
 		Assert.assertEquals("{!geofilt pt=48.303056,14.290556 sfield=field_1 d=0.0}",
 				queryParser.createQueryStringFromCriteria(criteria));
 	}
@@ -373,7 +404,7 @@ public class DefaultQueryParserTests {
 		Criteria criteria = new SimpleStringCriteria("field_1:value_1 AND field_2:value_2");
 		criteria = criteria.and("field_3").is("value_3");
 		Assert.assertEquals("field_1:value_1 AND field_2:value_2 AND field_3:value_3",
-				queryParser.createQueryStringFromCriteria(criteria));
+				queryParser.createQueryStringFromNode(criteria));
 	}
 
 	@Test
@@ -442,13 +473,6 @@ public class DefaultQueryParserTests {
 		assertFactingNotPresent(solrQuery);
 	}
 
-	@Test(expected = InvalidDataAccessApiUsageException.class)
-	public void testConstructSolrQueryWithMultiGroupBy() {
-		Query query = new SimpleQuery(new Criteria("field_1").is("value_1")).addGroupByField("group_1").addGroupByField(
-				new SimpleField("group_2"));
-		queryParser.constructSolrQuery(query);
-	}
-
 	@Test
 	public void testConstructSolrQueryWithSingleFacetOnField() {
 		Query query = new SimpleFacetQuery(new Criteria("field_1").is("value_1")).setFacetOptions(new FacetOptions(
@@ -463,6 +487,19 @@ public class DefaultQueryParserTests {
 	}
 
 	@Test
+	public void testConstructSolrQueryWithSinglePivot() {
+		Query query = new SimpleFacetQuery(new Criteria("field_1").is("value_1")).setFacetOptions(new FacetOptions()
+				.addFacetOnPivot("field_1", "field_2"));
+		SolrQuery solrQuery = queryParser.constructSolrQuery(query);
+		Assert.assertNotNull(solrQuery);
+		assertQueryStringPresent(solrQuery);
+		assertPaginationNotPresent(solrQuery);
+		assertProjectionNotPresent(solrQuery);
+		assertGroupingNotPresent(solrQuery);
+		assertPivotFactingPresent(solrQuery, "field_1,field_2");
+	}
+
+	@Test
 	public void testConstructSolrQueryWithMultipleFacetOnFields() {
 		FacetQuery query = new SimpleFacetQuery(new Criteria("field_1").is("value_1")).setFacetOptions(new FacetOptions(
 				"facet_1", "facet_2"));
@@ -473,6 +510,19 @@ public class DefaultQueryParserTests {
 		assertProjectionNotPresent(solrQuery);
 		assertGroupingNotPresent(solrQuery);
 		assertFactingPresent(solrQuery, "facet_1", "facet_2");
+	}
+
+	@Test
+	public void testConstructSolrQueryWithMultiplePivot() {
+		FacetQuery query = new SimpleFacetQuery(new Criteria("field_1").is("value_1")).setFacetOptions(new FacetOptions()
+				.addFacetOnPivot("field_1", "field_2").addFacetOnPivot("field_2", "field_3"));
+		SolrQuery solrQuery = queryParser.constructSolrQuery(query);
+		Assert.assertNotNull(solrQuery);
+		assertQueryStringPresent(solrQuery);
+		assertPaginationNotPresent(solrQuery);
+		assertProjectionNotPresent(solrQuery);
+		assertGroupingNotPresent(solrQuery);
+		assertPivotFactingPresent(solrQuery, "field_1,field_2", "field_2,field_3");
 	}
 
 	@Test
@@ -866,6 +916,518 @@ public class DefaultQueryParserTests {
 				solrQuery.getParams("f.field_2." + HighlightParams.FRAGSIZE)[0]);
 	}
 
+	/**
+	 * @see DATASOLR-105
+	 */
+	@Test
+	public void testNestedOrPartWithAnd() {
+
+		Criteria criteria = Criteria.where("field_1").is("foo")
+				.and(Criteria.where("field_2").is("bar").or("field_3").is("roo"))//
+				.or(Criteria.where("field_4").is("spring").and("field_5").is("data"));
+
+		Assert.assertEquals("field_1:foo AND (field_2:bar OR field_3:roo) OR (field_4:spring AND field_5:data)",
+				queryParser.createQueryStringFromNode(criteria));
+	}
+
+	/**
+	 * @see DATASOLR-105
+	 */
+	@Test
+	public void testNestedOrPartWithAndSomeOtherThings() {
+
+		Criteria criteria = Criteria.where("field_1").is("foo").is("bar")
+				.and(Criteria.where("field_2").is("bar").is("lala").or("field_3").is("roo"))
+				.or(Criteria.where("field_4").is("spring").and("field_5").is("data"));
+
+		Assert.assertEquals(
+				"field_1:(foo bar) AND (field_2:(bar lala) OR field_3:roo) OR (field_4:spring AND field_5:data)",
+				queryParser.createQueryStringFromNode(criteria));
+	}
+
+	/**
+	 * @see DATASOLR-105
+	 */
+	@Test
+	public void testMultipleAnd() {
+		Criteria criteria = Criteria.where("field_1").is("foo").and("field_2").is("bar").and("field_3").is("roo");
+
+		Assert.assertEquals("field_1:foo AND field_2:bar AND field_3:roo", queryParser.createQueryStringFromNode(criteria));
+	}
+
+	/**
+	 * @see DATASOLR-105
+	 */
+	@Test
+	public void testMultipleOr() {
+		Criteria criteria = Criteria.where("field_1").is("foo").or("field_2").is("bar").or("field_3").is("roo");
+
+		Assert.assertEquals("field_1:foo OR field_2:bar OR field_3:roo", queryParser.createQueryStringFromNode(criteria));
+	}
+
+	/**
+	 * @see DATASOLR-105
+	 */
+	@Test
+	public void testEmptyCriteriaShouldBeDefaultedToNotNUll() {
+		Criteria criteria = Criteria.where("field_1").is("foo").and("field_2").or("field_3");
+
+		Assert.assertEquals("field_1:foo AND field_2:[* TO *] OR field_3:[* TO *]",
+				queryParser.createQueryStringFromNode(criteria));
+	}
+
+	/**
+	 * @see DATASOLR-105
+	 */
+	@Test
+	public void testDeepNesting() {
+
+		Criteria criteria = Criteria.where("field_1").is("foo")
+				.and(Criteria.where("field_2").is("bar").and("field_3").is("roo")//
+						.and(Criteria.where("field_4").is("spring").and("field_5").is("data").or("field_6").is("solr")));
+
+		Assert.assertEquals(
+				"field_1:foo AND (field_2:bar AND field_3:roo AND (field_4:spring AND field_5:data OR field_6:solr))",
+				queryParser.createQueryStringFromNode(criteria));
+	}
+
+	/**
+	 * @see DATASOLR-168
+	 */
+	@Test
+	public void testNotCritieraCarriedOnPorperlyForNullAndNotNull() {
+
+		Criteria criteria = new Criteria("param1").isNotNull().and("param2").isNull();
+		Assert.assertEquals("param1:[* TO *] AND -param2:[* TO *]", queryParser.createQueryStringFromNode(criteria));
+	}
+
+	/**
+	 * @see DATASOLR-112
+	 */
+	@Test
+	public void pageableUsingZeroShouldBeParsedCorrectlyWhenSetUsingPageable() {
+
+		SimpleQuery query = new SimpleQuery("*:*").setPageRequest(new SolrPageRequest(0, 0));
+		assertPaginationPresent(queryParser.constructSolrQuery(query), 0, 0);
+	}
+
+	/**
+	 * @see DATASOLR-112
+	 */
+	@Test
+	public void pageableUsingZeroShouldBeParsedCorrectlyWhenSetUsingExplititMethods() {
+
+		SimpleQuery query = new SimpleQuery("*:*").setOffset(0).setRows(0);
+		assertPaginationPresent(queryParser.constructSolrQuery(query), 0, 0);
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testConstructSolrQueryWithStatField() {
+		StatsOptions statsOptions = new StatsOptions().addField(new SimpleField("field_1"));
+
+		SimpleQuery query = new SimpleQuery("*:*");
+		query.setStatsOptions(statsOptions);
+
+		SolrQuery solrQuery = queryParser.constructSolrQuery(query);
+
+		Assert.assertEquals("field_1", solrQuery.get(StatsParams.STATS_FIELD));
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testConstructSolrQueryWithStatFields() {
+		StatsOptions statsOptions = new StatsOptions()//
+				.addField(new SimpleField("field_1"))//
+				.addField(new SimpleField("field_2"));
+
+		SimpleQuery query = new SimpleQuery("*:*");
+		query.setStatsOptions(statsOptions);
+
+		SolrQuery solrQuery = queryParser.constructSolrQuery(query);
+
+		List<String> fields = Arrays.asList(solrQuery.getParams(StatsParams.STATS_FIELD));
+		Collections.sort(fields);
+		Assert.assertEquals(2, fields.size());
+		Assert.assertEquals(Arrays.asList("field_1", "field_2"), fields);
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testConstructSolrQueryWithStatFacets() {
+		StatsOptions statsOptions = new StatsOptions()//
+				.addFacet(new SimpleField("field_1"))//
+				.addFacet(new SimpleField("field_2"));
+
+		SimpleQuery query = new SimpleQuery("*:*");
+		query.setStatsOptions(statsOptions);
+
+		SolrQuery solrQuery = queryParser.constructSolrQuery(query);
+
+		List<String> facets = Arrays.asList(solrQuery.getParams(StatsParams.STATS_FACET));
+		Collections.sort(facets);
+		Assert.assertEquals(2, facets.size());
+		Assert.assertEquals(Arrays.asList("field_1", "field_2"), facets);
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testConstructSolrQueryWithStatFieldsAndFacets() {
+		StatsOptions statsOptions = new StatsOptions()//
+				.addField(new SimpleField("field_1"))//
+				.addFacet(new SimpleField("field_2"));
+
+		SimpleQuery query = new SimpleQuery("*:*");
+		query.setStatsOptions(statsOptions);
+
+		SolrQuery solrQuery = queryParser.constructSolrQuery(query);
+
+		String[] fields = solrQuery.getParams(StatsParams.STATS_FIELD);
+		String[] facets = solrQuery.getParams(StatsParams.STATS_FACET);
+
+		Assert.assertEquals(1, fields.length);
+		Assert.assertEquals(1, facets.length);
+		Assert.assertEquals("field_1", fields[0]);
+		Assert.assertEquals("field_2", facets[0]);
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testConstructSolrQueryWithSelectiveStatsFacet() {
+		StatsOptions statsOptions = new StatsOptions()//
+				.addField(new SimpleField("field_1"))//
+				.addSelectiveFacet(new SimpleField("field_2"));
+
+		SimpleQuery query = new SimpleQuery("*:*");
+		query.setStatsOptions(statsOptions);
+
+		SolrQuery solrQuery = queryParser.constructSolrQuery(query);
+
+		String[] fields = solrQuery.getParams(StatsParams.STATS_FIELD);
+		String[] facets = solrQuery.getParams(CommonParams.FIELD + ".field_1." + StatsParams.STATS_FACET);
+
+		Assert.assertEquals(1, fields.length);
+		Assert.assertEquals(1, facets.length);
+		Assert.assertEquals("field_1", fields[0]);
+		Assert.assertEquals("field_2", facets[0]);
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testConstructSolrQueryWithSelectiveStatsCountDistinct() {
+		StatsOptions statsOptions = new StatsOptions()//
+				.addField(new SimpleField("field_1")).setSelectiveCalcDistinct(true) //
+				.addField(new SimpleField("field_2")).setSelectiveCalcDistinct(false) //
+				.addField(new SimpleField("field_3"));
+
+		SimpleQuery query = new SimpleQuery("*:*");
+		query.setStatsOptions(statsOptions);
+
+		SolrQuery solrQuery = queryParser.constructSolrQuery(query);
+
+		String[] fields = solrQuery.getParams(StatsParams.STATS_FIELD);
+		String[] calc1 = solrQuery.getParams(CommonParams.FIELD + ".field_1." + StatsParams.STATS_CALC_DISTINCT);
+		String[] calc2 = solrQuery.getParams(CommonParams.FIELD + ".field_2." + StatsParams.STATS_CALC_DISTINCT);
+		String[] calc3 = solrQuery.getParams(CommonParams.FIELD + ".field_3." + StatsParams.STATS_CALC_DISTINCT);
+
+		Arrays.sort(fields);
+
+		Assert.assertEquals(3, fields.length);
+		Assert.assertArrayEquals(new String[] { "field_1", "field_2", "field_3" }, fields);
+		Assert.assertEquals("true", calc1[0]);
+		Assert.assertEquals("false", calc2[0]);
+		Assert.assertNull(calc3);
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testConstructSolrQueryWithStatsConfig() {
+		StatsOptions statsOptions = new StatsOptions()//
+				.addField(new SimpleField("field_1"))//
+				.addSelectiveFacet(new SimpleField("field_1_1"))//
+				.addSelectiveFacet(new SimpleField("field_1_2"))//
+				.addField("field_2")//
+				.addFacet("field_3");
+
+		SimpleQuery query = new SimpleQuery("*:*");
+		query.setStatsOptions(statsOptions);
+
+		SolrQuery solrQuery = queryParser.constructSolrQuery(query);
+
+		List<String> fields = Arrays.asList(solrQuery.getParams(StatsParams.STATS_FIELD));
+		Collections.sort(fields);
+		List<String> selectiveFacets = Arrays.asList(solrQuery.getParams(CommonParams.FIELD + ".field_1."
+				+ StatsParams.STATS_FACET));
+		String[] facets = solrQuery.getParams(StatsParams.STATS_FACET);
+
+		Assert.assertEquals(2, fields.size());
+		Assert.assertEquals(2, selectiveFacets.size());
+		Assert.assertEquals("field_1", fields.get(0));
+		Assert.assertEquals("field_2", fields.get(1));
+		Assert.assertEquals("field_1_1", selectiveFacets.get(0));
+		Assert.assertEquals("field_1_2", selectiveFacets.get(1));
+		Assert.assertEquals("field_3", facets[0]);
+	}
+
+	/**
+	 * @see DATASOLR-121
+	 */
+	@Test
+	public void testConstructGroupQueryWithAllPossibleParameters() {
+		GroupOptions groupOptions = new GroupOptions();
+
+		SimpleQuery query = new SimpleQuery();
+		query.addCriteria(new SimpleStringCriteria("*:*"));
+		query.setGroupOptions(groupOptions);
+		groupOptions.setOffset(1);
+		groupOptions.setLimit(2);
+		groupOptions.addGroupByField("field_1");
+		groupOptions.addGroupByFunction(MaxFunction.max("field_1", "field_2"));
+		groupOptions.addGroupByQuery(new SimpleQuery("*:*"));
+		groupOptions.addSort(new Sort(Sort.Direction.DESC, "field_3"));
+		groupOptions.setTotalCount(true);
+
+		SolrQuery solrQuery = queryParser.constructSolrQuery(query);
+
+		assertGroupFormatPresent(solrQuery, true);
+		Assert.assertEquals("field_1", solrQuery.get(GroupParams.GROUP_FIELD));
+		Assert.assertEquals("{!func}max(field_1,field_2)", solrQuery.get(GroupParams.GROUP_FUNC));
+		Assert.assertEquals("*:*", solrQuery.get(GroupParams.GROUP_QUERY));
+		Assert.assertEquals("field_3 desc", solrQuery.get(GroupParams.GROUP_SORT));
+		Assert.assertEquals("1", solrQuery.get(GroupParams.GROUP_OFFSET));
+		Assert.assertEquals("2", solrQuery.get(GroupParams.GROUP_LIMIT));
+	}
+
+	/**
+	 * @see DATASOLR-121
+	 */
+	@Test
+	public void testConstructGroupQueryWithoutPagingParameters() {
+		SimpleQuery query = new SimpleQuery();
+		query.addCriteria(new SimpleStringCriteria("*:*"));
+		query.setGroupOptions(new GroupOptions().addGroupByField("fieldName"));
+
+		SolrQuery solrQuery = queryParser.constructSolrQuery(query);
+
+		assertGroupFormatPresent(solrQuery, false);
+		Assert.assertNull(solrQuery.get(GroupParams.GROUP_SORT));
+		Assert.assertNull(solrQuery.get(GroupParams.GROUP_OFFSET));
+		Assert.assertNull(solrQuery.get(GroupParams.GROUP_LIMIT));
+	}
+
+	/**
+	 * @see DATASOLR-121
+	 */
+	@Test
+	public void testConstructGroupQueryWithMultipleFunctions() {
+		SimpleQuery query = new SimpleQuery();
+		query.addCriteria(new SimpleStringCriteria("*:*"));
+		query.setGroupOptions(new GroupOptions());
+		query.getGroupOptions().addGroupByFunction(MaxFunction.max("field_1", "field_2"));
+		query.getGroupOptions().addGroupByFunction(MaxFunction.max("field_3", "field_4"));
+
+		SolrQuery solrQuery = queryParser.constructSolrQuery(query);
+
+		assertGroupFormatPresent(solrQuery, false);
+		Assert.assertArrayEquals(new String[] { "{!func}max(field_1,field_2)", "{!func}max(field_3,field_4)" },
+				solrQuery.getParams(GroupParams.GROUP_FUNC));
+		Assert.assertNull(solrQuery.getParams(GroupParams.GROUP_QUERY));
+		Assert.assertNull(solrQuery.getParams(GroupParams.GROUP_FIELD));
+	}
+
+	/**
+	 * @see DATASOLR-121
+	 */
+	@Test
+	public void testConstructGroupQueryWithMultipleQueries() {
+		SimpleQuery query = new SimpleQuery();
+		query.addCriteria(new SimpleStringCriteria("*:*"));
+		query.setGroupOptions(new GroupOptions());
+		query.getGroupOptions().addGroupByQuery(new SimpleQuery("query1"));
+		query.getGroupOptions().addGroupByQuery(new SimpleQuery("query2"));
+
+		SolrQuery solrQuery = queryParser.constructSolrQuery(query);
+
+		assertGroupFormatPresent(solrQuery, false);
+		Assert.assertArrayEquals(new String[] { "query1", "query2" }, solrQuery.getParams(GroupParams.GROUP_QUERY));
+		Assert.assertNull(solrQuery.getParams(GroupParams.GROUP_FUNC));
+		Assert.assertNull(solrQuery.getParams(GroupParams.GROUP_FIELD));
+	}
+
+	/**
+	 * @see DATASOLR-196
+	 */
+	@Test
+	public void connectShouldAllowConcatinationOfCriteriaWithAndPreservingDesiredBracketing() {
+
+		Criteria part1 = Criteria.where("z").is("roo");
+		Criteria part2 = Criteria.where("x").is("foo").or("y").is("bar");
+		Criteria criteria = part1.connect().and(part2);
+
+		Assert.assertEquals("z:roo AND (x:foo OR y:bar)", queryParser.createQueryStringFromNode(criteria));
+	}
+
+	/**
+	 * @see DATASOLR-196
+	 */
+	@Test
+	public void connectShouldAllowConcatinationOfCriteriaWithAndPreservingDesiredBracketingReverse() {
+
+		Criteria part1 = Criteria.where("z").is("roo");
+		Criteria part2 = Criteria.where("x").is("foo").or("y").is("bar");
+		Criteria criteria = part2.connect().and(part1);
+
+		Assert.assertEquals("(x:foo OR y:bar) AND z:roo", queryParser.createQueryStringFromNode(criteria));
+	}
+
+	/**
+	 * @see DATASOLR-196
+	 */
+	@Test
+	public void connectShouldAllowConcatinationOfCriteriaWithOrPreservingDesiredBracketing() {
+
+		Criteria part1 = Criteria.where("z").is("roo");
+		Criteria part2 = Criteria.where("x").is("foo").or("y").is("bar");
+		Criteria criteria = part1.connect().or(part2);
+
+		Assert.assertEquals("z:roo OR (x:foo OR y:bar)", queryParser.createQueryStringFromNode(criteria));
+	}
+
+	/**
+	 * @see DATASOLR-196
+	 */
+	@Test
+	public void connectShouldAllowConcatinationOfCriteriaWithOrPreservingDesiredBracketingReverse() {
+
+		Criteria part1 = Criteria.where("z").is("roo");
+		Criteria part2 = Criteria.where("x").is("foo").or("y").is("bar");
+		Criteria criteria = part2.connect().or(part1);
+
+		Assert.assertEquals("(x:foo OR y:bar) OR z:roo", queryParser.createQueryStringFromNode(criteria));
+	}
+
+	/**
+	 * @see DATASOLR-196
+	 */
+	@Test
+	public void notOperatorShouldWrapWholeExpression() {
+
+		Criteria part1 = Criteria.where("text").startsWith("fx").or("product_code").startsWith("fx");
+		Criteria part2 = Criteria.where("text").startsWith("option").or("product_code").startsWith("option");
+		Criteria criteria = part1.connect().and(part2).notOperator();
+
+		String expected = "-((text:fx* OR product_code:fx*) AND (text:option* OR product_code:option*))";
+		Assert.assertEquals(expected, queryParser.createQueryStringFromNode(criteria));
+	}
+
+	/**
+	 * @see DATASOLR-196
+	 */
+	@Test
+	public void notOperatorShouldWrapNestedExpressionCorrectly() {
+
+		Criteria part1 = Criteria.where("z").is("roo");
+		Criteria part2 = Criteria.where("x").is("foo").or("y").is("bar").notOperator();
+
+		Criteria criteria = part1.connect().or(part2);
+
+		Assert.assertEquals("z:roo OR -(x:foo OR y:bar)", queryParser.createQueryStringFromNode(criteria));
+	}
+
+	/**
+	 * @see DATASOLR-196
+	 */
+	@Test
+	public void notOperatorShouldWrapNestedExpressionCorrectlyReverse() {
+
+		Criteria part1 = Criteria.where("z").is("roo");
+		Criteria part2 = Criteria.where("x").is("foo").or("y").is("bar").notOperator();
+
+		Criteria criteria = part2.connect().or(part1);
+
+		Assert.assertEquals("-(x:foo OR y:bar) OR z:roo", queryParser.createQueryStringFromNode(criteria));
+	}
+
+	/**
+	 * @see DATASOLR-196
+	 */
+	@Test
+	public void notOperatorShouldWrapNestedExpressionCorrectlyReverseWithDoubleNegation() {
+
+		Criteria part1 = Criteria.where("z").is("roo");
+		Criteria part2 = Criteria.where("x").is("foo").or("y").is("bar").notOperator();
+
+		Criteria criteria = part2.connect().and(part1).notOperator();
+
+		Assert.assertEquals("-(-(x:foo OR y:bar) AND z:roo)", queryParser.createQueryStringFromNode(criteria));
+	}
+
+	/**
+	 * @see DATASOLR-236
+	 */
+	@Test
+	public void testNegativeFacetLimitUsingFacetOptions_setFacetLimit() {
+		FacetQuery query = new SimpleFacetQuery(new Criteria("field_1").is("value_1"));
+		FacetOptions facetOptions = new FacetOptions(new SimpleField("facet_1"));
+		facetOptions.setFacetLimit(-1);
+		query.setFacetOptions(facetOptions);
+
+		SolrQuery solrQuery = queryParser.constructSolrQuery(query);
+
+		Assert.assertEquals(-1, solrQuery.getFacetLimit());
+		Assert.assertEquals(null, solrQuery.get(FacetParams.FACET_OFFSET));
+	}
+
+	/**
+	 * @see DATASOLR-236
+	 */
+	@Test
+	public void testNegativeFacetLimitUsingFacetOptions_setPageable() {
+		FacetQuery query = new SimpleFacetQuery(new Criteria("field_1").is("value_1"));
+		FacetOptions facetOptions = new FacetOptions(new SimpleField("facet_1"));
+		facetOptions.setPageable(new SolrPageRequest(0, -1));
+		query.setFacetOptions(facetOptions);
+
+		SolrQuery solrQuery = queryParser.constructSolrQuery(query);
+
+		Assert.assertEquals(-1, solrQuery.getFacetLimit());
+		Assert.assertEquals(null, solrQuery.get(FacetParams.FACET_OFFSET));
+	}
+
+	/**
+	 * @see DATASOLR-236
+	 */
+	@Test
+	public void testNegativeFacetOffsetAndFacetLimitUsingFacetOptions_setPageable() {
+		FacetQuery query = new SimpleFacetQuery(new Criteria("field_1").is("value_1"));
+		FacetOptions facetOptions = new FacetOptions(new SimpleField("facet_1"));
+		facetOptions.setPageable(new SolrPageRequest(1, -1));
+		query.setFacetOptions(facetOptions);
+
+		SolrQuery solrQuery = queryParser.constructSolrQuery(query);
+
+		Assert.assertEquals(-1, solrQuery.getFacetLimit());
+		Assert.assertEquals(Integer.valueOf(0), solrQuery.getInt(FacetParams.FACET_OFFSET));
+	}
+
+	private void assertPivotFactingPresent(SolrQuery solrQuery, String... expected) {
+		Assert.assertArrayEquals(expected, solrQuery.getParams(FacetParams.FACET_PIVOT));
+	}
+
 	private void assertFactingPresent(SolrQuery solrQuery, String... expected) {
 		Assert.assertArrayEquals(expected, solrQuery.getFacetFields());
 	}
@@ -908,6 +1470,13 @@ public class DefaultQueryParserTests {
 		Assert.assertNotNull(solrQuery.get(GroupParams.GROUP_FIELD));
 		Assert.assertNotNull(solrQuery.get(GroupParams.GROUP_MAIN));
 		Assert.assertEquals(expected, solrQuery.get(GroupParams.GROUP_FIELD));
+	}
+
+	private void assertGroupFormatPresent(SolrQuery solrQuery, boolean groupTotalCount) {
+		Assert.assertEquals("true", solrQuery.get(GroupParams.GROUP));
+		Assert.assertEquals("false", solrQuery.get(GroupParams.GROUP_MAIN));
+		Assert.assertEquals("grouped", solrQuery.get(GroupParams.GROUP_FORMAT));
+		Assert.assertEquals(String.valueOf(groupTotalCount), solrQuery.get(GroupParams.GROUP_TOTAL_COUNT));
 	}
 
 }

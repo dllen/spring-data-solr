@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,12 +21,14 @@ import java.util.List;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
 import org.springframework.data.domain.Sort;
-import org.springframework.data.solr.core.geo.BoundingBox;
-import org.springframework.data.solr.core.geo.Distance;
-import org.springframework.data.solr.core.geo.GeoLocation;
+import org.springframework.data.geo.Box;
+import org.springframework.data.geo.Distance;
+import org.springframework.data.geo.Point;
 import org.springframework.data.solr.core.query.result.FacetPage;
 import org.springframework.data.solr.core.query.result.HighlightPage;
+import org.springframework.data.solr.core.query.result.StatsPage;
 
 /**
  * @author Christoph Strobl
@@ -94,11 +96,11 @@ public interface ProductRepository extends SolrCrudRepository<ProductBean, Strin
 
 	List<ProductBean> findByNameStartsWithOrTitleStartsWith(@Boost(2) String name, String title);
 
-	List<ProductBean> findByLocationWithin(GeoLocation location, Distance distance);
+	List<ProductBean> findByLocationWithin(Point location, Distance distance);
 
-	List<ProductBean> findByLocationNear(GeoLocation location, Distance distance);
+	List<ProductBean> findByLocationNear(Point location, Distance distance);
 
-	List<ProductBean> findByLocationNear(BoundingBox bbox);
+	List<ProductBean> findByLocationNear(Box bbox);
 
 	List<ProductBean> findByAvailableTrueOrderByPopularityDesc();
 
@@ -183,5 +185,32 @@ public interface ProductRepository extends SolrCrudRepository<ProductBean, Strin
 	@Query("name:?0*")
 	@Highlight(query = "description:?1")
 	HighlightPage<ProductBean> findByNameHighlightWihtQueryOverride(String name, String highlightOn, Pageable page);
+
+	Long countProductBeanByName(String name);
+
+	Long countByName(String name);
+
+	void deleteByName(String name);
+
+	long deleteProductBeanByName(String name);
+
+	List<ProductBean> removeByName(String name);
+
+	@Query(value = "name:?0", delete = true)
+	void removeUsingAnnotatedQuery(String name);
+
+	List<ProductBean> findTop2ByNameStartingWith(String name);
+
+	Page<ProductBean> findTop3ByNameStartsWith(String string, Pageable page);
+
+	Slice<ProductBean> findProductBeanByName(String name, Pageable page);
+
+	@Query("*:*")
+	@Stats(//
+			value = { "id", "price" },//
+			facets = { "last_modified", "id" },//
+			selective = @SelectiveStats(field = "weight", facets = "inStock")//
+	)
+	StatsPage<ProductBean> findAllWithStats(Pageable pageable);
 
 }

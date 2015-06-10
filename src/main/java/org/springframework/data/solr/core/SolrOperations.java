@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,6 @@
  * limitations under the License.
  */
 package org.springframework.data.solr.core;
-
-import java.util.Collection;
-
 import org.apache.solr.client.solrj.SolrServer;
 import org.apache.solr.client.solrj.response.SolrPingResponse;
 import org.apache.solr.client.solrj.response.UpdateResponse;
@@ -28,15 +25,25 @@ import org.springframework.data.solr.core.query.HighlightQuery;
 import org.springframework.data.solr.core.query.Query;
 import org.springframework.data.solr.core.query.SolrDataQuery;
 import org.springframework.data.solr.core.query.TermsQuery;
+import org.springframework.data.solr.core.query.result.Cursor;
 import org.springframework.data.solr.core.query.result.FacetPage;
+import org.springframework.data.solr.core.query.result.GroupPage;
 import org.springframework.data.solr.core.query.result.HighlightPage;
+import org.springframework.data.solr.core.query.result.ScoredPage;
+import org.springframework.data.solr.core.query.result.StatsPage;
 import org.springframework.data.solr.core.query.result.TermsPage;
+
+import java.io.Serializable;
+import java.util.Collection;
+
+
 
 /**
  * Interface that specifies a basic set of Solr operations.
  * 
  * @author Christoph Strobl
  * @author Joachim Uhrlass
+ * @author Francisco Spaeth
  */
 public interface SolrOperations {
 
@@ -170,7 +177,18 @@ public interface SolrOperations {
 	 * @param clazz
 	 * @return
 	 */
-	<T> Page<T> queryForPage(Query query, Class<T> clazz);
+	<T> ScoredPage<T> queryForPage(Query query, Class<T> clazz );
+
+
+
+    /**
+     * Execute the query against solr and retrun result as {@link Page}
+     *
+     * @param query
+     * @param clazz
+     * @return
+     */
+    <T> ScoredPage<T> queryForPage(Query query, Class<T> clazz, RequestMethod method);
 
 	/**
 	 * Execute a facet query against solr facet result will be returned along with query result within the FacetPage
@@ -199,13 +217,61 @@ public interface SolrOperations {
 	TermsPage queryForTermsPage(TermsQuery query);
 
 	/**
+	 * Executes the given {@link Query} and returns an open {@link Cursor} allowing to iterate of results, dynamically
+	 * fetching additional ones if required.
+	 * 
+	 * @param query
+	 * @param clazz
+	 * @return
+	 * @since 1.3
+	 */
+	<T> Cursor<T> queryForCursor(Query query, Class<T> clazz);
+
+	/**
+	 * Execute the query against solr and return result as {@link GroupPage}
+	 * 
+	 * @param query
+	 * @param clazz
+	 * @return
+	 * @since 1.4
+	 */
+	<T> GroupPage<T> queryForGroupPage(Query query, Class<T> clazz);
+
+	/**
+	 * Execute the query against Solr and return result as {@link StatsPage}.
+	 * 
+	 * @param query must not be {@literal null}.
+	 * @param clazz must not be {@literal null}.
+	 * @return
+	 * @size 1.4
+	 */
+	<T> StatsPage<T> queryForStatsPage(Query query, Class<T> clazz);
+
+	/**
+	 * Executes a realtime get using given id.
+	 * 
+	 * @param id
+	 * @return
+	 * @since 1.4
+	 */
+	<T> T getById(Serializable id, Class<T> clazz);
+
+	/**
+	 * Executes a realtime get using given ids.
+	 * 
+	 * @param ids
+	 * @return
+	 * @since 1.4
+	 */
+	<T> Collection<T> getById(Collection<? extends Serializable> ids, Class<T> clazz);
+
+	/**
 	 * Send commit command {@link SolrServer#commit()}
 	 */
 	void commit();
 
 	/**
 	 * Send soft commmit command {@link SolrServer#commit(boolean, boolean, boolean)}
-	 * 
 	 */
 	void softCommit();
 

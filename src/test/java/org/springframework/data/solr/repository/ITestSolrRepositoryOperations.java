@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,15 @@ package org.springframework.data.solr.repository;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.List;
 
 import org.hamcrest.Matchers;
+import org.hamcrest.collection.IsCollectionWithSize;
 import org.hamcrest.collection.IsEmptyCollection;
+import org.hamcrest.core.Is;
+import org.hamcrest.core.IsCollectionContaining;
+import org.hamcrest.core.IsEqual;
 import org.hamcrest.core.IsNot;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
@@ -33,17 +38,21 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.domain.Sort.Direction;
-import org.springframework.data.solr.core.geo.BoundingBox;
-import org.springframework.data.solr.core.geo.Distance;
-import org.springframework.data.solr.core.geo.GeoLocation;
+import org.springframework.data.geo.Box;
+import org.springframework.data.geo.Distance;
+import org.springframework.data.geo.Point;
 import org.springframework.data.solr.core.query.SimpleField;
+import org.springframework.data.solr.core.query.SolrPageRequest;
 import org.springframework.data.solr.core.query.result.FacetFieldEntry;
 import org.springframework.data.solr.core.query.result.FacetPage;
 import org.springframework.data.solr.core.query.result.FacetQueryEntry;
+import org.springframework.data.solr.core.query.result.FieldStatsResult;
 import org.springframework.data.solr.core.query.result.HighlightEntry.Highlight;
 import org.springframework.data.solr.core.query.result.HighlightPage;
+import org.springframework.data.solr.core.query.result.StatsPage;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
 import org.springframework.util.StringUtils;
@@ -51,6 +60,7 @@ import org.springframework.util.StringUtils;
 /**
  * @author Christoph Strobl
  * @author John Dorman
+ * @author Francisco Spaeth
  */
 @RunWith(SpringJUnit4ClassRunner.class)
 @ContextConfiguration
@@ -61,8 +71,7 @@ public class ITestSolrRepositoryOperations {
 	private static final ProductBean UNAVAILABLE_PRODUCT = createProductBean("3", 3, false);
 	private static final ProductBean NAMED_PRODUCT = createProductBean("4", 3, true, "product");
 
-	@Autowired
-	private ProductRepository repo;
+	@Autowired private ProductRepository repo;
 
 	@Before
 	public void setUp() {
@@ -283,7 +292,7 @@ public class ITestSolrRepositoryOperations {
 
 		repo.save(Arrays.asList(locatedInBuffalow, locatedInNYC));
 
-		List<ProductBean> found = repo.findByLocationWithin(new GeoLocation(45.15, -93.85), new Distance(5));
+		List<ProductBean> found = repo.findByLocationWithin(new Point(45.15, -93.85), new Distance(5));
 		Assert.assertEquals(1, found.size());
 		Assert.assertEquals(locatedInBuffalow.getId(), found.get(0).getId());
 	}
@@ -298,13 +307,13 @@ public class ITestSolrRepositoryOperations {
 
 		repo.save(Arrays.asList(locatedInBuffalow, locatedInNYC));
 
-		List<ProductBean> found = repo.findByLocationNear(new GeoLocation(45.15, -93.85), new Distance(5));
+		List<ProductBean> found = repo.findByLocationNear(new Point(45.15, -93.85), new Distance(5));
 		Assert.assertEquals(1, found.size());
 		Assert.assertEquals(locatedInBuffalow.getId(), found.get(0).getId());
 	}
 
 	@Test
-	public void testFindByNearWithBoundingBox() {
+	public void testFindByNearWithBox() {
 		ProductBean locatedInBuffalow = createProductBean("100", 5, true);
 		locatedInBuffalow.setLocation("45.17614,-93.87341");
 
@@ -313,8 +322,7 @@ public class ITestSolrRepositoryOperations {
 
 		repo.save(Arrays.asList(locatedInBuffalow, locatedInNYC));
 
-		List<ProductBean> found = repo.findByLocationNear(new BoundingBox(new GeoLocation(45, -94),
-				new GeoLocation(46, -93)));
+		List<ProductBean> found = repo.findByLocationNear(new Box(new Point(45, -94), new Point(46, -93)));
 		Assert.assertEquals(1, found.size());
 		Assert.assertEquals(locatedInBuffalow.getId(), found.get(0).getId());
 	}
@@ -456,13 +464,13 @@ public class ITestSolrRepositoryOperations {
 		Pageable pageable = new PageRequest(0, 2);
 		Page<ProductBean> page1 = repo.findByNameStartingWith("name", pageable);
 		Assert.assertEquals(pageable.getPageSize(), page1.getNumberOfElements());
-		Assert.assertTrue(page1.hasNextPage());
+		Assert.assertTrue(page1.hasNext());
 		Assert.assertEquals(3, page1.getTotalElements());
 
 		pageable = new PageRequest(1, 2);
 		Page<ProductBean> page2 = repo.findByNameStartingWith("name", pageable);
 		Assert.assertEquals(1, page2.getNumberOfElements());
-		Assert.assertFalse(page2.hasNextPage());
+		Assert.assertFalse(page2.hasNext());
 		Assert.assertEquals(3, page2.getTotalElements());
 	}
 
@@ -754,6 +762,196 @@ public class ITestSolrRepositoryOperations {
 				}
 			}
 		}
+	}
+
+	/**
+	 * @see DATASOLR-143
+	 */
+	@Test
+	public void testCountByWorksCorrectly() {
+
+		Assert.assertThat(repo.countProductBeanByName(NAMED_PRODUCT.getName()), Is.is(1L));
+		Assert.assertThat(repo.countByName(NAMED_PRODUCT.getName()), Is.is(1L));
+	}
+
+	/**
+	 * @see DATASOLR-144
+	 */
+	@Test
+	public void testDereivedDeleteQueryRemovesDocumentsCorrectly() {
+
+		long referenceCount = repo.count();
+		repo.deleteByName(NAMED_PRODUCT.getName());
+		Assert.assertThat(repo.exists(NAMED_PRODUCT.getId()), Is.is(false));
+		Assert.assertThat(repo.count(), Is.is(referenceCount - 1));
+	}
+
+	/**
+	 * @see DATASOLR-144
+	 */
+	@Test
+	public void testDerivedDeleteByQueryRemovesDocumentAndReturnsNumberDeletedCorrectly() {
+
+		long referenceCount = repo.count();
+		long nrDeleted = repo.deleteProductBeanByName(NAMED_PRODUCT.getName());
+		Assert.assertThat(repo.exists(NAMED_PRODUCT.getId()), Is.is(false));
+		Assert.assertThat(repo.count(), Is.is(referenceCount - nrDeleted));
+	}
+
+	/**
+	 * @see DATASOLR-144
+	 */
+	@Test
+	public void testDerivedDeleteByQueryRemovesDocumentAndReturnsListOfDeletedDocumentsCorrectly() {
+
+		List<ProductBean> result = repo.removeByName(NAMED_PRODUCT.getName());
+		Assert.assertThat(repo.exists(NAMED_PRODUCT.getId()), Is.is(false));
+		Assert.assertThat(result, IsCollectionWithSize.hasSize(1));
+		Assert.assertThat(result.get(0).getId(), IsEqual.equalTo(NAMED_PRODUCT.getId()));
+	}
+
+	/**
+	 * @see DATASOLR-144
+	 */
+	@Test
+	public void testAnnotatedDeleteByQueryRemovesDocumensCorrectly() {
+
+		long referenceCount = repo.count();
+		repo.removeUsingAnnotatedQuery(NAMED_PRODUCT.getName());
+		Assert.assertThat(repo.exists(NAMED_PRODUCT.getId()), Is.is(false));
+		Assert.assertThat(repo.count(), Is.is(referenceCount - 1));
+	}
+
+	/**
+	 * @see DATASOLR-170
+	 */
+	@Test
+	public void findTopNResultAppliesLimitationCorrectly() {
+
+		List<ProductBean> result = repo.findTop2ByNameStartingWith("na");
+		Assert.assertThat(result, IsCollectionWithSize.hasSize(2));
+	}
+
+	/**
+	 * @see DATASOLR-170
+	 */
+	@Test
+	public void findTopNResultAppliesLimitationForPageableCorrectly() {
+
+		List<ProductBean> beans = createProductBeans(10, "top");
+		repo.save(beans);
+
+		Page<ProductBean> result = repo.findTop3ByNameStartsWith("to", new PageRequest(0, 2));
+		Assert.assertThat(result.getNumberOfElements(), IsEqual.equalTo(2));
+		Assert.assertThat(result.getContent(), IsCollectionContaining.hasItems(beans.get(0), beans.get(1)));
+	}
+
+	/**
+	 * @see DATASOLR-170
+	 */
+	@Test
+	public void findTopNResultAppliesLimitationForPageableCorrectlyForPage1() {
+
+		List<ProductBean> beans = createProductBeans(10, "top");
+		repo.save(beans);
+
+		Page<ProductBean> result = repo.findTop3ByNameStartsWith("to", new PageRequest(1, 2));
+		Assert.assertThat(result.getNumberOfElements(), IsEqual.equalTo(1));
+		Assert.assertThat(result.getContent(), IsCollectionContaining.hasItems(beans.get(2)));
+	}
+
+	/**
+	 * @see DATASOLR-170
+	 */
+	@Test
+	public void findTopNResultReturnsEmptyListIfOusideOfRange() {
+
+		repo.save(createProductBeans(10, "top"));
+
+		Page<ProductBean> result = repo.findTop3ByNameStartsWith("to", new PageRequest(1, 5));
+		Assert.assertThat(result.getNumberOfElements(), IsEqual.equalTo(0));
+		Assert.assertThat(result.hasNext(), IsEqual.equalTo(false));
+	}
+
+	/**
+	 * @see DATASOLR-186
+	 */
+	@Test
+	public void sliceShouldReturnCorrectly() {
+
+		repo.save(createProductBeans(10, "slice"));
+
+		Slice<ProductBean> slice = repo.findProductBeanByName("slice", new PageRequest(0, 2));
+		Assert.assertThat(slice.getNumberOfElements(), Is.is(2));
+	}
+
+	/**
+	 * @see DATASOLR-186
+	 */
+	@Test
+	public void sliceShouldReturnAllElementsWhenPageableIsBigEnoughCorrectly() {
+
+		repo.save(createProductBeans(10, "slice"));
+
+		Slice<ProductBean> slice = repo.findProductBeanByName("slice", new PageRequest(0, 20));
+		Assert.assertThat(slice.getNumberOfElements(), Is.is(10));
+	}
+
+	/**
+	 * @see DATASOLR-186
+	 */
+	@Test
+	public void sliceShouldBeEmptyWhenPageableOutOfRange() {
+
+		repo.save(createProductBeans(10, "slice"));
+
+		Slice<ProductBean> slice = repo.findProductBeanByName("slice", new PageRequest(1, 20));
+		Assert.assertThat(slice.hasContent(), Is.is(false));
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testStatsAnnotatedMethod() {
+
+		ProductBean created = createProductBean("1", 1, true);
+		created.setPrice(1F);
+		created.setAvailable(true);
+		created.setLastModified(new Date());
+		created.setWeight(10F);
+
+		repo.save(created);
+
+		StatsPage<ProductBean> statsPage = repo.findAllWithStats(new SolrPageRequest(0, 0));
+
+		FieldStatsResult id = statsPage.getFieldStatsResult("id");
+		FieldStatsResult price = statsPage.getFieldStatsResult("price");
+		FieldStatsResult weight = statsPage.getFieldStatsResult("weight");
+
+		Assert.assertNotNull(id);
+		Assert.assertNotNull(price);
+		Assert.assertNotNull(price.getFacetStatsResult("id"));
+		Assert.assertNotNull(price.getFacetStatsResult("last_modified"));
+		Assert.assertNull(price.getFacetStatsResult("inStock"));
+		Assert.assertNotNull(id.getFacetStatsResult("id"));
+		Assert.assertNotNull(id.getFacetStatsResult("last_modified"));
+		Assert.assertNull(id.getFacetStatsResult("inStock"));
+
+		Assert.assertNotNull(weight);
+		Assert.assertNotNull(weight.getFacetStatsResult("inStock"));
+		Assert.assertNull(weight.getFacetStatsResult("last_modified"));
+		Assert.assertNull(weight.getFacetStatsResult("id"));
+	}
+
+	private static List<ProductBean> createProductBeans(int nrToCreate, String prefix) {
+
+		List<ProductBean> beans = new ArrayList<ProductBean>(nrToCreate);
+		for (int i = 0; i < nrToCreate; i++) {
+			String id = StringUtils.hasText(prefix) ? (prefix + "-" + i) : Integer.toString(i);
+			beans.add(createProductBean(id, 0, true, id));
+		}
+		return beans;
 	}
 
 	private static ProductBean createProductBean(String id, int popularity, boolean available) {

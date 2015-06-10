@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,11 +17,13 @@ package org.springframework.data.solr.repository.support;
 
 import java.io.Serializable;
 
+import org.apache.solr.client.solrj.SolrServer;
 import org.springframework.beans.factory.FactoryBean;
 import org.springframework.data.repository.Repository;
 import org.springframework.data.repository.core.support.RepositoryFactorySupport;
 import org.springframework.data.repository.core.support.TransactionalRepositoryFactoryBeanSupport;
 import org.springframework.data.solr.core.SolrOperations;
+import org.springframework.data.solr.core.mapping.SimpleSolrMappingContext;
 import org.springframework.util.Assert;
 
 /**
@@ -33,7 +35,10 @@ import org.springframework.util.Assert;
 public class SolrRepositoryFactoryBean<T extends Repository<S, ID>, S, ID extends Serializable> extends
 		TransactionalRepositoryFactoryBeanSupport<T, S, ID> {
 
+	private SolrServer solrServer;
 	private SolrOperations operations;
+	private boolean schemaCreationSupport;
+	private SimpleSolrMappingContext solrMappingContext;
 
 	/**
 	 * Configures the {@link SolrOperations} to be used to create Solr repositories.
@@ -41,8 +46,32 @@ public class SolrRepositoryFactoryBean<T extends Repository<S, ID>, S, ID extend
 	 * @param operations the operations to set
 	 */
 	public void setSolrOperations(SolrOperations operations) {
-		Assert.notNull(operations);
 		this.operations = operations;
+	}
+
+	public void setSolrServer(SolrServer solrServer) {
+		this.solrServer = solrServer;
+	}
+
+	public void setSchemaCreationSupport(boolean schemaCreationSupport) {
+		this.schemaCreationSupport = schemaCreationSupport;
+	}
+
+	/**
+	 * @param solrMappingContext
+	 * @since 1.4
+	 */
+	public void setSolrMappingContext(SimpleSolrMappingContext solrMappingContext) {
+		this.solrMappingContext = solrMappingContext;
+		super.setMappingContext(solrMappingContext);
+	}
+
+	/**
+	 * @return
+	 * @since 1.4
+	 */
+	public SimpleSolrMappingContext getSolrMappingContext() {
+		return solrMappingContext;
 	}
 
 	/**
@@ -58,12 +87,17 @@ public class SolrRepositoryFactoryBean<T extends Repository<S, ID>, S, ID extend
 	 */
 	@Override
 	public void afterPropertiesSet() {
+
 		super.afterPropertiesSet();
-		Assert.notNull(operations, "SolrOperations must be configured!");
+		Assert.isTrue((operations != null || solrServer != null), "SolrOperations or SolrServer must be configured!");
 	}
 
 	@Override
 	protected RepositoryFactorySupport doCreateRepositoryFactory() {
-		return new SolrRepositoryFactory(operations);
+
+		SolrRepositoryFactory factory = operations != null ? new SolrRepositoryFactory(this.operations)
+				: new SolrRepositoryFactory(this.solrServer);
+		factory.setSchemaCreationSupport(schemaCreationSupport);
+		return factory;
 	}
 }

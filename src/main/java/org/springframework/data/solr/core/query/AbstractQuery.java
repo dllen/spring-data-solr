@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,8 +29,7 @@ class AbstractQuery {
 	private Join join;
 	private String requestHandler;
 
-	AbstractQuery() {
-	}
+	AbstractQuery() {}
 
 	AbstractQuery(Criteria criteria) {
 		this.addCriteria(criteria);
@@ -45,15 +44,18 @@ class AbstractQuery {
 	@SuppressWarnings("unchecked")
 	public final <T extends SolrDataQuery> T addCriteria(Criteria criteria) {
 		Assert.notNull(criteria, "Cannot add null criteria.");
-		if (!(criteria instanceof SimpleStringCriteria)) {
-			Assert.notNull(criteria.getField(), "Cannot add criteria for null field.");
-			Assert.hasText(criteria.getField().getName(), "Criteria.field.name must not be null/empty.");
-		}
 
 		if (this.criteria == null) {
 			this.criteria = criteria;
 		} else {
-			this.criteria.and(criteria);
+			if (this.criteria instanceof Crotch) {
+				((Crotch) this.criteria).add(criteria);
+			} else {
+				Crotch tree = new Crotch();
+				tree.add(this.criteria);
+				tree.add(criteria);
+				this.criteria = tree;
+			}
 		}
 		return (T) this;
 	}

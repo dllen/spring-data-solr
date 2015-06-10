@@ -25,7 +25,6 @@ import org.apache.solr.client.solrj.beans.Field;
 
 /**
  * @author Christoph Strobl
- * 
  */
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.FIELD)
@@ -40,10 +39,63 @@ public @interface Indexed {
 	boolean readonly() default false;
 
 	/**
+	 * @return
+	 * @since 1.3
+	 */
+	boolean stored() default true;
+
+	/**
+	 * @return
+	 * @since 1.3
+	 */
+	boolean searchable() default true;
+
+	/**
+	 * @return
+	 * @since 1.3
+	 */
+	String type() default "";
+
+	/**
+	 * @return
+	 * @since 1.3
+	 */
+	String[] copyTo() default {};
+
+	/**
+	 * @return
+	 * @since 1.3
+	 */
+	String defaultValue() default "";
+
+	/**
+	 * @return
+	 * @since 1.3
+	 */
+	boolean required() default false;
+
+	/**
+	 * If not set the fields name or the one defined via {@link Field} will be used.
+	 * 
+	 * @return
+	 * @since 1.3
+	 * @see Indexed#value()
+	 */
+	String name() default "";
+
+	/**
 	 * if not set the fields name or the one defined via {@link Field} will be used
 	 * 
 	 * @return
 	 */
 	String value() default "";
+
+	/**
+	 * Boost Field by value. Default is {@code Float.NaN}.
+	 * 
+	 * @return
+	 * @since 1.2
+	 */
+	float boost() default Float.NaN;
 
 }

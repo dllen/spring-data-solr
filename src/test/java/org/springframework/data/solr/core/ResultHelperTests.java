@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,17 +18,26 @@ package org.springframework.data.solr.core;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 
 import org.apache.solr.client.solrj.response.FacetField;
+import org.apache.solr.client.solrj.response.FieldStatsInfo;
+import org.apache.solr.client.solrj.response.Group;
+import org.apache.solr.client.solrj.response.GroupCommand;
+import org.apache.solr.client.solrj.response.GroupResponse;
 import org.apache.solr.client.solrj.response.QueryResponse;
 import org.apache.solr.client.solrj.response.TermsResponse;
 import org.apache.solr.client.solrj.response.TermsResponse.Term;
+import org.apache.solr.common.SolrDocumentList;
 import org.apache.solr.common.util.NamedList;
+import org.hamcrest.collection.IsEmptyIterable;
+import org.hamcrest.collection.IsIterableContainingInOrder;
 import org.hamcrest.core.IsEqual;
+import org.hamcrest.core.IsNull;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -37,29 +46,39 @@ import org.mockito.Mockito;
 import org.mockito.runners.MockitoJUnitRunner;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.solr.core.query.Criteria;
 import org.springframework.data.solr.core.query.FacetOptions;
 import org.springframework.data.solr.core.query.FacetQuery;
 import org.springframework.data.solr.core.query.Field;
+import org.springframework.data.solr.core.query.GroupOptions;
+import org.springframework.data.solr.core.query.PivotField;
+import org.springframework.data.solr.core.query.Query;
 import org.springframework.data.solr.core.query.SimpleFacetQuery;
+import org.springframework.data.solr.core.query.SimplePivotField;
 import org.springframework.data.solr.core.query.SimpleQuery;
 import org.springframework.data.solr.core.query.SimpleStringCriteria;
 import org.springframework.data.solr.core.query.SolrDataQuery;
 import org.springframework.data.solr.core.query.result.FacetFieldEntry;
+import org.springframework.data.solr.core.query.result.FacetPivotFieldEntry;
 import org.springframework.data.solr.core.query.result.FacetQueryEntry;
+import org.springframework.data.solr.core.query.result.FieldStatsResult;
+import org.springframework.data.solr.core.query.result.GroupEntry;
+import org.springframework.data.solr.core.query.result.GroupResult;
 import org.springframework.data.solr.core.query.result.HighlightEntry;
 import org.springframework.data.solr.core.query.result.HighlightEntry.Highlight;
 import org.springframework.data.solr.core.query.result.SolrResultPage;
+import org.springframework.data.solr.core.query.result.StatsResult;
 import org.springframework.data.solr.core.query.result.TermsFieldEntry;
 
 /**
  * @author Christoph Strobl
+ * @author Francisco Spaeth
  */
 @RunWith(MockitoJUnitRunner.class)
 public class ResultHelperTests {
 
-	@Mock
-	private QueryResponse response;
+	@Mock private QueryResponse response;
 
 	@Test
 	public void testConvertFacetQueryResponseForNullQueryResponse() {
@@ -284,6 +303,67 @@ public class ResultHelperTests {
 	}
 
 	@Test
+	public void testConvertFacetQueryResponseToFacetPivotMap() {
+		NamedList<List<org.apache.solr.client.solrj.response.PivotField>> pivotData = new NamedList<List<org.apache.solr.client.solrj.response.PivotField>>();
+		List<org.apache.solr.client.solrj.response.PivotField> vals = new ArrayList<org.apache.solr.client.solrj.response.PivotField>();
+		{
+			List<org.apache.solr.client.solrj.response.PivotField> pivotValues = new ArrayList<org.apache.solr.client.solrj.response.PivotField>();
+			pivotValues.add(new org.apache.solr.client.solrj.response.PivotField("field_2", "value_1_1", 7, null));
+			pivotValues.add(new org.apache.solr.client.solrj.response.PivotField("field_2", "value_1_2", 3, null));
+			vals.add(new org.apache.solr.client.solrj.response.PivotField("field_1", "value_1", 10, pivotValues));
+		}
+		{
+			List<org.apache.solr.client.solrj.response.PivotField> pivotValues = new ArrayList<org.apache.solr.client.solrj.response.PivotField>();
+			pivotValues.add(new org.apache.solr.client.solrj.response.PivotField("field_2", "value_2_1", 2, null));
+			vals.add(new org.apache.solr.client.solrj.response.PivotField("field_1", "value_2", 2, pivotValues));
+		}
+		pivotData.add("field_1,field_2", vals);
+
+		Mockito.when(response.getFacetPivot()).thenReturn(pivotData);
+
+		Map<PivotField, List<FacetPivotFieldEntry>> result = ResultHelper.convertFacetQueryResponseToFacetPivotMap(
+				createFacetPivotQuery("field_1", "field_2"), response);
+
+		List<FacetPivotFieldEntry> resultPivot = result.get(new SimplePivotField("field_1", "field_2"));
+		Assert.assertNotNull(result);
+		Assert.assertEquals(2, resultPivot.size());
+
+		Assert.assertNotNull(resultPivot.get(0));
+		Assert.assertEquals("value_1", resultPivot.get(0).getValue());
+		Assert.assertNotNull(resultPivot.get(0).getField());
+		Assert.assertEquals("field_1", resultPivot.get(0).getField().getName());
+		Assert.assertEquals(10, resultPivot.get(0).getValueCount());
+		Assert.assertNotNull(resultPivot.get(0).getPivot());
+		Assert.assertEquals(2, resultPivot.get(0).getPivot().size());
+
+		{
+			List<FacetPivotFieldEntry> pivot = resultPivot.get(0).getPivot();
+			Assert.assertEquals("value_1_1", pivot.get(0).getValue());
+			Assert.assertNotNull(pivot.get(0).getField());
+			Assert.assertEquals("field_2", pivot.get(0).getField().getName());
+			Assert.assertEquals(7, pivot.get(0).getValueCount());
+			Assert.assertNull(pivot.get(0).getPivot());
+			Assert.assertEquals("value_1_2", pivot.get(1).getValue());
+			Assert.assertNotNull(pivot.get(1).getField());
+			Assert.assertEquals("field_2", pivot.get(1).getField().getName());
+			Assert.assertEquals(3, pivot.get(1).getValueCount());
+			Assert.assertNull(pivot.get(1).getPivot());
+		}
+
+		{
+			List<FacetPivotFieldEntry> pivot = resultPivot.get(1).getPivot();
+			Assert.assertEquals("value_2_1", pivot.get(0).getValue());
+			Assert.assertNotNull(pivot.get(0).getField());
+			Assert.assertEquals("field_2", pivot.get(0).getField().getName());
+			Assert.assertEquals(2, pivot.get(0).getValueCount());
+			Assert.assertNull(pivot.get(0).getPivot());
+		}
+
+		Assert.assertNotNull(resultPivot.get(0).getPivot().get(0));
+
+	}
+
+	@Test
 	public void testConvertTermsQueryResponseReturnsTermsMapCorrectlyWhenOneFieldReturned() {
 		TermsResponse termsResponse = new TermsResponse(new NamedList<NamedList<Number>>());
 		termsResponse.getTermMap().put("field_1", Arrays.asList(new Term("term_1", 10), new Term("term_2", 5)));
@@ -340,6 +420,285 @@ public class ResultHelperTests {
 				IsEqual.equalTo(Collections.<String, List<TermsFieldEntry>> emptyMap()));
 	}
 
+	/**
+	 * @see DATASOLR-121
+	 */
+	@Test
+	public void testConvertGroupQueryResponseToGroupResultList() {
+		GroupResponse groupResponse = Mockito.mock(GroupResponse.class);
+		Query query = Mockito.mock(Query.class);
+		SolrTemplate solrTemplate = Mockito.mock(SolrTemplate.class);
+		GroupCommand groupCommand1 = Mockito.mock(GroupCommand.class);
+		Group group1_1 = Mockito.mock(Group.class);
+		SolrDocumentList group1_1DocumentList = Mockito.mock(SolrDocumentList.class);
+		List<Object> documents1_1 = Arrays.asList(new Object());
+
+		Mockito.when(response.getGroupResponse()).thenReturn(groupResponse);
+		Mockito.when(groupResponse.getValues()).thenReturn(Arrays.asList(groupCommand1));
+		Mockito.when(groupCommand1.getValues()).thenReturn(Arrays.asList(group1_1));
+		Mockito.when(group1_1.getResult()).thenReturn(group1_1DocumentList);
+		Mockito.when(group1_1.getGroupValue()).thenReturn("group1_1_value");
+		Mockito.when(group1_1DocumentList.getNumFound()).thenReturn(3L);
+		Mockito.when(solrTemplate.convertSolrDocumentListToBeans(group1_1DocumentList, Object.class)).thenReturn(
+				documents1_1);
+		Mockito.when(groupCommand1.getMatches()).thenReturn(1);
+		Mockito.when(groupCommand1.getName()).thenReturn("group1_name");
+		Mockito.when(groupCommand1.getNGroups()).thenReturn(2);
+
+		GroupOptions groupOptions = new GroupOptions();
+		groupOptions.setLimit(1);
+
+		Mockito.when(query.getPageRequest()).thenReturn(new PageRequest(0, 1));
+		Mockito.when(query.getGroupOptions()).thenReturn(groupOptions);
+
+		Object group1Key = new Object();
+		Map<String, Object> objectNames = new HashMap<String, Object>();
+		objectNames.put("group1_name", group1Key);
+
+		Map<Object, GroupResult<Object>> result = ResultHelper.convertGroupQueryResponseToGroupResultMap(query,
+				objectNames, response, solrTemplate, Object.class);
+		Assert.assertNotNull(result);
+		Assert.assertEquals(2, result.size());
+
+		GroupResult<Object> groupResult = result.get("group1_name");
+		Assert.assertEquals(groupResult, result.get(group1Key));
+		Assert.assertEquals("group1_name", groupResult.getName());
+		Assert.assertEquals(1, groupResult.getMatches());
+		Assert.assertEquals(Integer.valueOf(2), groupResult.getGroupsCount());
+
+		Page<GroupEntry<Object>> groupEntries = groupResult.getGroupEntries();
+		Assert.assertEquals(2, groupEntries.getTotalElements());
+		Assert.assertEquals(2, groupEntries.getTotalPages());
+		Assert.assertEquals(true, groupEntries.hasNext());
+
+		List<GroupEntry<Object>> groupEntriesContent = groupEntries.getContent();
+		Assert.assertNotNull(groupEntriesContent);
+		Assert.assertEquals(1, groupEntriesContent.size());
+
+		GroupEntry<Object> groupEntriesContentElement = groupEntriesContent.get(0);
+		Assert.assertEquals("group1_1_value", groupEntriesContentElement.getGroupValue());
+
+		Page<Object> group1result = groupEntriesContentElement.getResult();
+		Assert.assertEquals(3, group1result.getTotalElements());
+		Assert.assertEquals(3, group1result.getTotalPages());
+		Assert.assertEquals(true, group1result.hasNext());
+	}
+
+	/**
+	 * @see DATASOLR-121
+	 */
+	@Test
+	public void testConvertGroupQueryResponseToGroupResultListWhenNoCountOfGroups() {
+		GroupResponse groupResponse = Mockito.mock(GroupResponse.class);
+		Query query = Mockito.mock(Query.class);
+		SolrTemplate solrTemplate = Mockito.mock(SolrTemplate.class);
+		GroupCommand groupCommand1 = Mockito.mock(GroupCommand.class);
+		Group group1_1 = Mockito.mock(Group.class);
+		SolrDocumentList group1_1DocumentList = Mockito.mock(SolrDocumentList.class);
+		List<Object> documents1_1 = Arrays.asList(new Object());
+
+		Mockito.when(response.getGroupResponse()).thenReturn(groupResponse);
+		Mockito.when(groupResponse.getValues()).thenReturn(Arrays.asList(groupCommand1));
+		Mockito.when(groupCommand1.getValues()).thenReturn(Arrays.asList(group1_1));
+		Mockito.when(group1_1.getResult()).thenReturn(group1_1DocumentList);
+		Mockito.when(group1_1.getGroupValue()).thenReturn("group1_1_value");
+		Mockito.when(group1_1DocumentList.getNumFound()).thenReturn(3L);
+		Mockito.when(solrTemplate.convertSolrDocumentListToBeans(group1_1DocumentList, Object.class)).thenReturn(
+				documents1_1);
+		Mockito.when(groupCommand1.getMatches()).thenReturn(1);
+		Mockito.when(groupCommand1.getName()).thenReturn("group1_name");
+		Mockito.when(groupCommand1.getNGroups()).thenReturn(null);
+
+		GroupOptions groupOptions = new GroupOptions();
+		groupOptions.setLimit(1);
+
+		Mockito.when(query.getPageRequest()).thenReturn(new PageRequest(0, 1));
+		Mockito.when(query.getGroupOptions()).thenReturn(groupOptions);
+
+		Object group1Key = new Object();
+		Map<String, Object> objectNames = new HashMap<String, Object>();
+		objectNames.put("group1_name", group1Key);
+
+		Map<Object, GroupResult<Object>> result = ResultHelper.convertGroupQueryResponseToGroupResultMap(query,
+				objectNames, response, solrTemplate, Object.class);
+
+		Assert.assertNotNull(result);
+		Assert.assertEquals(2, result.size());
+
+		GroupResult<Object> groupResult = result.get("group1_name");
+		Assert.assertEquals(result.get(group1Key), groupResult);
+		Assert.assertEquals("group1_name", groupResult.getName());
+		Assert.assertEquals(1, groupResult.getMatches());
+		Assert.assertEquals(null, groupResult.getGroupsCount());
+
+		Page<GroupEntry<Object>> groupEntries = groupResult.getGroupEntries();
+		Assert.assertEquals(1, groupEntries.getTotalElements());
+		Assert.assertEquals(1, groupEntries.getTotalPages());
+		Assert.assertEquals(false, groupEntries.hasNext());
+
+		List<GroupEntry<Object>> groupEntriesContent = groupEntries.getContent();
+		Assert.assertNotNull(groupEntriesContent);
+		Assert.assertEquals(1, groupEntriesContent.size());
+
+		GroupEntry<Object> groupEntriesContentElement = groupEntriesContent.get(0);
+		Assert.assertEquals("group1_1_value", groupEntriesContentElement.getGroupValue());
+
+		Page<Object> group1result = groupEntriesContentElement.getResult();
+		Assert.assertEquals(3, group1result.getTotalElements());
+		Assert.assertEquals(3, group1result.getTotalPages());
+		Assert.assertEquals(true, group1result.hasNext());
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testConvertSingleFieldStatsInfoToStatsResultMap() {
+
+		Map<String, FieldStatsInfo> fieldStatsInfos = new HashMap<String, FieldStatsInfo>();
+
+		NamedList<Object> nl = createFieldStatNameList("min", "max", 20D, 10L, 5L, 22.5D, 15.5D, 1D);
+
+		fieldStatsInfos.put("field", new FieldStatsInfo(nl, "field"));
+
+		Map<String, FieldStatsResult> converted = ResultHelper.convertFieldStatsInfoToFieldStatsResultMap(fieldStatsInfos);
+
+		FieldStatsResult fieldStatsResult = converted.get("field");
+
+		Assert.assertEquals("min", fieldStatsResult.getMin());
+		Assert.assertEquals("max", fieldStatsResult.getMax());
+		Assert.assertEquals(Double.valueOf(20), fieldStatsResult.getSum());
+		Assert.assertEquals(Double.valueOf(22.5), fieldStatsResult.getMean());
+		Assert.assertEquals(Long.valueOf(10), fieldStatsResult.getCount());
+		Assert.assertEquals(Long.valueOf(5), fieldStatsResult.getMissing());
+		Assert.assertEquals(Double.valueOf(15.5), fieldStatsResult.getStddev());
+		Assert.assertEquals(Double.valueOf(1D), fieldStatsResult.getSumOfSquares());
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testConvertNullFieldStatsInfoToStatsResultMap() {
+
+		Map<String, FieldStatsResult> converted = ResultHelper.convertFieldStatsInfoToFieldStatsResultMap(null);
+
+		Assert.assertThat(converted, IsNull.notNullValue());
+		Assert.assertThat(converted.entrySet(), IsEmptyIterable.emptyIterable());
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testConvertEmptyFieldStatsInfoMapToStatsResultMap() {
+
+		Map<String, FieldStatsResult> converted = ResultHelper
+				.convertFieldStatsInfoToFieldStatsResultMap(new HashMap<String, FieldStatsInfo>());
+
+		Assert.assertThat(converted, IsNull.notNullValue());
+		Assert.assertThat(converted.entrySet(), IsEmptyIterable.emptyIterable());
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testConvertFieldStatsInfoMapWithNullToStatsResultMap() {
+
+		Map<String, FieldStatsResult> converted = ResultHelper.convertFieldStatsInfoToFieldStatsResultMap(Collections
+				.<String, FieldStatsInfo> singletonMap("field", null));
+
+		Assert.assertThat(converted, IsNull.notNullValue());
+		Assert.assertThat(converted.keySet(), IsIterableContainingInOrder.contains("field"));
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testConvertFieldStatsInfoMapWithEmptyNamedListToStatsResultMap() {
+
+		Map<String, FieldStatsResult> converted = ResultHelper.convertFieldStatsInfoToFieldStatsResultMap(Collections
+				.<String, FieldStatsInfo> singletonMap("field", new FieldStatsInfo(new NamedList<Object>(), "field")));
+
+		Assert.assertThat(converted, IsNull.notNullValue());
+		Assert.assertThat(converted.keySet(), IsIterableContainingInOrder.contains("field"));
+	}
+
+	/**
+	 * @see DATASOLR-160
+	 */
+	@Test
+	public void testConvertFieldStatsInfoToStatsResultMap() {
+
+		Map<String, FieldStatsInfo> fieldStatsInfos = new HashMap<String, FieldStatsInfo>();
+
+		NamedList<Object> values = new NamedList<Object>();
+		NamedList<Object> facets = new NamedList<Object>();
+		NamedList<Object> nl = createFieldStatNameList("min", "max", 20D, 10L, 5L, 22.5D, 15.5D, 1D);
+		nl.add("facets", facets);
+		facets.add("facetField", values);
+		values.add("value1", createFieldStatNameList("f1v1min", "f1v1max", 110D, 111L, 112L, 113D, 11.3D, 1D));
+		values.add("value2", createFieldStatNameList("f1v2min", "f1v2max", 120D, 121L, 122L, 123D, 12.3D, 1D));
+
+		fieldStatsInfos.put("field", new FieldStatsInfo(nl, "field"));
+
+		// convert
+		Map<String, FieldStatsResult> converted = ResultHelper.convertFieldStatsInfoToFieldStatsResultMap(fieldStatsInfos);
+
+		// field
+		FieldStatsResult fieldStatsResult = converted.get("field");
+		Assert.assertEquals("min", fieldStatsResult.getMin());
+		Assert.assertEquals("max", fieldStatsResult.getMax());
+		Assert.assertEquals(Double.valueOf(20), fieldStatsResult.getSum());
+		Assert.assertEquals(Double.valueOf(22.5), fieldStatsResult.getMean());
+		Assert.assertEquals(Long.valueOf(10), fieldStatsResult.getCount());
+		Assert.assertEquals(Long.valueOf(5), fieldStatsResult.getMissing());
+		Assert.assertEquals(Double.valueOf(15.5), fieldStatsResult.getStddev());
+
+		// facets
+		Map<String, Map<String, StatsResult>> facetStatsResults = fieldStatsResult.getFacetStatsResults();
+		Assert.assertEquals(1, facetStatsResults.size());
+
+		// facet field
+		Map<String, StatsResult> facetStatsResult = facetStatsResults.get("facetField");
+		Assert.assertNotNull(facetStatsResult);
+
+		// facet values
+		StatsResult facetValue1StatsResult = facetStatsResult.get("value1");
+		Assert.assertEquals("f1v1min", facetValue1StatsResult.getMin());
+		Assert.assertEquals("f1v1max", facetValue1StatsResult.getMax());
+		Assert.assertEquals(Double.valueOf(110), facetValue1StatsResult.getSum());
+		Assert.assertEquals(Double.valueOf(113), facetValue1StatsResult.getMean());
+		Assert.assertEquals(Long.valueOf(111), facetValue1StatsResult.getCount());
+		Assert.assertEquals(Long.valueOf(112), facetValue1StatsResult.getMissing());
+		Assert.assertEquals(Double.valueOf(11.3), facetValue1StatsResult.getStddev());
+
+		StatsResult facetValue2StatsResult = facetStatsResult.get("value2");
+		Assert.assertEquals("f1v2min", facetValue2StatsResult.getMin());
+		Assert.assertEquals("f1v2max", facetValue2StatsResult.getMax());
+		Assert.assertEquals(Double.valueOf(120), facetValue2StatsResult.getSum());
+		Assert.assertEquals(Double.valueOf(123), facetValue2StatsResult.getMean());
+		Assert.assertEquals(Long.valueOf(121), facetValue2StatsResult.getCount());
+		Assert.assertEquals(Long.valueOf(122), facetValue2StatsResult.getMissing());
+		Assert.assertEquals(Double.valueOf(12.3), facetValue2StatsResult.getStddev());
+	}
+
+	private NamedList<Object> createFieldStatNameList(Object min, Object max, Double sum, Long count, Long missing,
+			Object mean, Double stddev, Double sumOfSquares) {
+		NamedList<Object> nl = new NamedList<Object>();
+		nl.add("min", min);
+		nl.add("max", max);
+		nl.add("sum", sum);
+		nl.add("count", count);
+		nl.add("missing", missing);
+		nl.add("mean", mean);
+		nl.add("stddev", stddev);
+		nl.add("sumOfSquares", sumOfSquares);
+		return nl;
+	}
+
 	private FacetQuery createFacetQuery(SolrDataQuery... facetQueries) {
 		FacetQuery fq = new SimpleFacetQuery(new SimpleStringCriteria("*:*"));
 		fq.setFacetOptions(new FacetOptions(facetQueries));
@@ -349,6 +708,12 @@ public class ResultHelperTests {
 	private FacetQuery createFacetQuery(String... facetFields) {
 		FacetQuery fq = new SimpleFacetQuery(new Criteria(facetFields[0]));
 		fq.setFacetOptions(new FacetOptions(facetFields));
+		return fq;
+	}
+
+	private FacetQuery createFacetPivotQuery(String... pivotFieldNames) {
+		FacetQuery fq = new SimpleFacetQuery(new Criteria("field_1"));
+		fq.setFacetOptions(new FacetOptions().addFacetOnPivot(pivotFieldNames));
 		return fq;
 	}
 
@@ -362,7 +727,7 @@ public class ResultHelperTests {
 
 	private static class SolrBeanWithIdNamedField {
 
-		@SuppressWarnings("unused")
+		@SuppressWarnings("unused")//
 		private String id;
 
 		public SolrBeanWithIdNamedField(String id) {
@@ -373,9 +738,7 @@ public class ResultHelperTests {
 
 	private static class SolrBeanWithAnnoteatedIdNamedField {
 
-		@SuppressWarnings("unused")
-		@Id
-		private String idField;
+		private @Id String idField;
 
 		public SolrBeanWithAnnoteatedIdNamedField(String idField) {
 			this.idField = idField;

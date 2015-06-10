@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2013 the original author or authors.
+ * Copyright 2012 - 2015 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,6 +27,7 @@ import java.util.Map;
 import org.apache.solr.client.solrj.beans.Field;
 import org.apache.solr.common.SolrDocument;
 import org.apache.solr.common.SolrInputDocument;
+import org.apache.solr.common.SolrInputField;
 import org.hamcrest.Matchers;
 import org.hamcrest.collection.IsArrayContainingInAnyOrder;
 import org.hamcrest.collection.IsCollectionWithSize;
@@ -35,16 +36,18 @@ import org.hamcrest.collection.IsMapContaining;
 import org.hamcrest.core.IsEqual;
 import org.hamcrest.core.IsInstanceOf;
 import org.hamcrest.core.IsNull;
+import org.joda.time.DateTime;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
-import org.springframework.data.solr.core.geo.GeoLocation;
+import org.springframework.data.geo.Point;
 import org.springframework.data.solr.core.mapping.Indexed;
 import org.springframework.data.solr.core.mapping.SimpleSolrMappingContext;
 import org.springframework.data.solr.core.query.PartialUpdate;
 
 /**
  * @author Christoph Strobl
+ * @author Francisco Spaeth
  */
 public class MappingSolrConverterTests {
 
@@ -83,7 +86,7 @@ public class MappingSolrConverterTests {
 	@Test
 	public void testWriteWithCustomType() {
 		BeanWithCustomTypes bean = new BeanWithCustomTypes();
-		bean.location = new GeoLocation(48.362893D, 14.534437D);
+		bean.location = new Point(48.362893D, 14.534437D);
 
 		SolrInputDocument document = new SolrInputDocument();
 		converter.write(bean, document);
@@ -94,7 +97,7 @@ public class MappingSolrConverterTests {
 	@Test
 	public void testWriteWithCustomTypeList() {
 		BeanWithCustomTypes bean = new BeanWithCustomTypes();
-		bean.locations = Arrays.asList(new GeoLocation(48.362893D, 14.534437D), new GeoLocation(48.208602D, 16.372996D));
+		bean.locations = Arrays.asList(new Point(48.362893D, 14.534437D), new Point(48.208602D, 16.372996D));
 
 		SolrInputDocument document = new SolrInputDocument();
 		converter.write(bean, document);
@@ -390,13 +393,13 @@ public class MappingSolrConverterTests {
 
 		BeanWithCustomTypes target = converter.read(BeanWithCustomTypes.class, document);
 
-		Assert.assertEquals(48.362893D, target.location.getLatitude(), 0.0f);
-		Assert.assertEquals(14.534437D, target.location.getLongitude(), 0.0f);
+		Assert.assertEquals(48.362893D, target.location.getX(), 0.0f);
+		Assert.assertEquals(14.534437D, target.location.getY(), 0.0f);
 
-		Assert.assertEquals(48.362893D, target.locations.get(0).getLatitude(), 0.0f);
-		Assert.assertEquals(14.534437D, target.locations.get(0).getLongitude(), 0.0f);
-		Assert.assertEquals(13.923404D, target.locations.get(1).getLatitude(), 0.0f);
-		Assert.assertEquals(142.177731D, target.locations.get(1).getLongitude(), 0.0f);
+		Assert.assertEquals(48.362893D, target.locations.get(0).getX(), 0.0f);
+		Assert.assertEquals(14.534437D, target.locations.get(0).getY(), 0.0f);
+		Assert.assertEquals(13.923404D, target.locations.get(1).getX(), 0.0f);
+		Assert.assertEquals(142.177731D, target.locations.get(1).getY(), 0.0f);
 	}
 
 	@Test
@@ -744,6 +747,97 @@ public class MappingSolrConverterTests {
 		Assert.assertThat(target.stringWithPrefix, IsEqual.equalTo("value_1"));
 	}
 
+	@Test
+	public void shouldConvertTypesWithinCollectionsOfMapCorrectly() {
+
+		SolrDocument document = new SolrDocument();
+		document.addField("fieldWithDateTimeInListOfMap_d", new Date(60264684000000L));
+
+		BeanWithWildcardsOnTypesThatRequireConversion target = converter.read(
+				BeanWithWildcardsOnTypesThatRequireConversion.class, document);
+		Assert.assertThat(target.fieldWithDateTimeInListOfMap.get("fieldWithDateTimeInListOfMap_d"),
+				IsInstanceOf.instanceOf(List.class));
+		Assert.assertThat(target.fieldWithDateTimeInListOfMap.get("fieldWithDateTimeInListOfMap_d").get(0),
+				IsInstanceOf.instanceOf(DateTime.class));
+	}
+
+	/**
+	 * @see DATASOLR-171
+	 */
+	@SuppressWarnings("unchecked")
+	@Test
+	public void shouldUseConstructorCorrectlyWhenMultivaluedConvertedToArray() {
+
+		SolrDocument document = new SolrDocument();
+		document.addField("array", Arrays.asList("v-1", "v-2"));
+
+		BeanWithArrayConstructor target = converter.read(BeanWithArrayConstructor.class, document);
+		Assert.assertThat(target.fields, IsEqual.equalTo(((List<String>) document.getFieldValue("array")).toArray()));
+	}
+
+	/**
+	 * @see DATASOLR-235
+	 */
+	@Test
+	public void testRegularFieldBoosting() {
+
+		BeanWithBoost bean = new BeanWithBoost();
+		bean.boostedRegularField = "value";
+		bean.regularField = "value";
+
+		Map<String, SolrInputField> target = new HashMap<String, SolrInputField>();
+		converter.write(bean, target);
+
+		// configured boost
+		Assert.assertEquals(0.5f, target.get("boostedRegularField").getBoost(), 0);
+		// default boost
+		Assert.assertEquals(1, target.get("regularField").getBoost(), 0);
+	}
+
+	/**
+	 * @see DATASOLR-235
+	 */
+	@Test
+	public void testMapWildcardFieldBoosting() {
+
+		BeanWithBoost bean = new BeanWithBoost();
+
+		bean.boostedMapWildcardField = new HashMap<String, String>();
+		bean.boostedMapWildcardField.put("val1_boostedMapWildcardField", "value");
+		bean.boostedMapWildcardField.put("val2_boostedMapWildcardField", "value");
+
+		bean.mapWildcardField = new HashMap<String, String>();
+		bean.mapWildcardField.put("val1_mapWildcardField", "value");
+		bean.mapWildcardField.put("val2_mapWildcardField", "value");
+
+		Map<String, SolrInputField> target = new HashMap<String, SolrInputField>();
+		converter.write(bean, target);
+
+		// configured boost
+		Assert.assertEquals(0.5f, target.get("val1_boostedMapWildcardField").getBoost(), 0);
+		Assert.assertEquals(0.5f, target.get("val2_boostedMapWildcardField").getBoost(), 0);
+		// default boost
+		Assert.assertEquals(1, target.get("val1_mapWildcardField").getBoost(), 0);
+		Assert.assertEquals(1, target.get("val2_mapWildcardField").getBoost(), 0);
+	}
+
+	/**
+	 * @see DATASOLR-235
+	 */
+	@Test
+	public void testDocumentBoosting() {
+		SolrInputDocument boostedDocument = new SolrInputDocument();
+		SolrInputDocument regularDocument = new SolrInputDocument();
+
+		converter.write(new BeanWithBoost(), boostedDocument);
+		converter.write(new BeanBase(), regularDocument);
+
+		// configured boost
+		Assert.assertEquals(0.5f, boostedDocument.getDocumentBoost(), 0);
+		// default boost
+		Assert.assertEquals(1, regularDocument.getDocumentBoost(), 0);
+	}
+
 	public static class BeanWithoutAnnotatedFields {
 
 		String notIndexedProperty;
@@ -752,31 +846,25 @@ public class MappingSolrConverterTests {
 
 	public static class BeanWithCustomTypes {
 
-		@Field
-		GeoLocation location;
+		@Field Point location;
 
-		@Field
-		List<GeoLocation> locations;
+		@Field List<Point> locations;
 
 	}
 
 	public static class BeanWithSimpleTypes {
 
-		@Field
-		int simpleIntProperty;
+		@Field int simpleIntProperty;
 
-		@Field
-		boolean simpleBoolProperty;
+		@Field boolean simpleBoolProperty;
 
-		@Field
-		float simpleFloatProperty;
+		@Field float simpleFloatProperty;
 
 	}
 
 	public static class BeanWithNamedFields {
 
-		@Field("namedProperty")
-		String name;
+		@Field("namedProperty") String name;
 
 	}
 
@@ -800,38 +888,29 @@ public class MappingSolrConverterTests {
 
 	public static class BeanWithDefaultTypes {
 
-		@Field
-		String stringProperty;
+		@Field String stringProperty;
 
-		@Field
-		Integer intProperty;
+		@Field Integer intProperty;
 
-		@Field
-		List<String> listOfString;
+		@Field List<String> listOfString;
 
-		@Field
-		String[] arrayOfString;
+		@Field String[] arrayOfString;
 
-		@Field
-		Date dateProperty;
+		@Field Date dateProperty;
 
 	}
 
 	public static class BeanWithCatchAllField {
 
-		@Indexed(readonly = true)
-		@Field("stringProperty_*")
-		String[] allStringProperties;
+		@Indexed(readonly = true) @Field("stringProperty_*") String[] allStringProperties;
 
 	}
 
 	public static class BeanWithConstructor {
 
-		@Field
-		String stringProperty;
+		@Field String stringProperty;
 
-		@Field
-		Integer intProperty;
+		@Field Integer intProperty;
 
 		public BeanWithConstructor(String stringProperty, Integer intProperty) {
 			super();
@@ -841,94 +920,98 @@ public class MappingSolrConverterTests {
 
 	}
 
+	public static class BeanWithWildcardsOnTypesThatRequireConversion {
+
+		@Field("fieldWithDateTimeInListOfMap_*") Map<String, List<DateTime>> fieldWithDateTimeInListOfMap;
+	}
+
 	public class BeanWithWildcards {
 
-		@Field("field_with_trailing_wildcard_*")
-		String filedWithTrailingWildcard;
+		@Field("field_with_trailing_wildcard_*") String filedWithTrailingWildcard;
 
-		@Field("*_field_with_leading_wildcard")
-		String fieldWithLeadingWildcard;
+		@Field("*_field_with_leading_wildcard") String fieldWithLeadingWildcard;
 
-		@Field("listFieldWithTrailingWildcard_*")
-		List<String> listFieldWithTrailingWildcard;
+		@Field("listFieldWithTrailingWildcard_*") List<String> listFieldWithTrailingWildcard;
 
-		@Field("arrayFieldWithTrailingWildcard_*")
-		String[] arrayFieldWithTrailingWildcard;
+		@Field("arrayFieldWithTrailingWildcard_*") String[] arrayFieldWithTrailingWildcard;
 
-		@Field("*_listFieldWithLeadingWildcard")
-		List<String> listFieldWithLeadingWildcard;
+		@Field("*_listFieldWithLeadingWildcard") List<String> listFieldWithLeadingWildcard;
 
-		@Field("*_arrayFieldWithTrailingWildcard")
-		String[] arrayFieldWithLeadingWildcard;
+		@Field("*_arrayFieldWithTrailingWildcard") String[] arrayFieldWithLeadingWildcard;
 
-		@Field("*_flatMapWithLeadingWildcard")
-		Map<String, String> flatMapWithLeadingWildcard;
+		@Field("*_flatMapWithLeadingWildcard") Map<String, String> flatMapWithLeadingWildcard;
 
-		@Field("flatMapWithTrailingWildcard_*")
-		Map<String, String> flatMapWithTrailingWildcard;
+		@Field("flatMapWithTrailingWildcard_*") Map<String, String> flatMapWithTrailingWildcard;
 
-		@Field("*_multivaluedFieldMapWithLeadingWildcard")
-		Map<String, String[]> multivaluedFieldMapWithLeadingWildcardArray;
+		@Field("*_multivaluedFieldMapWithLeadingWildcard") Map<String, String[]> multivaluedFieldMapWithLeadingWildcardArray;
 
-		@Field("*_multivaluedFieldMapWithLeadingWildcard")
-		Map<String, List<String>> multivaluedFieldMapWithLeadingWildcardList;
+		@Field("*_multivaluedFieldMapWithLeadingWildcard") Map<String, List<String>> multivaluedFieldMapWithLeadingWildcardList;
 
-		@Field("multivaluedFieldMapWithTrailingWildcard_*")
-		Map<String, String[]> multivaluedFieldMapWithTrailingWildcardArray;
+		@Field("multivaluedFieldMapWithTrailingWildcard_*") Map<String, String[]> multivaluedFieldMapWithTrailingWildcardArray;
 
-		@Field("multivaluedFieldMapWithTrailingWildcard_*")
-		Map<String, List<String>> multivaluedFieldMapWithTrailingWildcardList;
+		@Field("multivaluedFieldMapWithTrailingWildcard_*") Map<String, List<String>> multivaluedFieldMapWithTrailingWildcardList;
 
 	}
 
 	public static class BeanWithFieldsExcludedFromIndexing {
 
-		@Indexed(readonly = true)
-		@Field
-		String transientField;
+		@Indexed(readonly = true) @Field String transientField;
 
 	}
 
 	public static class BeanBase {
 
-		@Field
-		String stringProperty;
+		@Field String stringProperty;
 
 	}
 
 	public static class BeanWithInteritance extends BeanBase {
 
-		@Field
-		Integer intProperty;
+		@Field Integer intProperty;
 
 	}
 
 	public static class BeanWithDifferentMaps {
 
-		@Field("map_*")
-		Map<String, String> mapProperty;
+		@Field("map_*") Map<String, String> mapProperty;
 
-		@Field("hashMap_*")
-		HashMap<String, String> hashMapProperty;
+		@Field("hashMap_*") HashMap<String, String> hashMapProperty;
 
-		@Field("linkedHashMap_*")
-		LinkedHashMap<String, String> linkedHashMapProperty;
+		@Field("linkedHashMap_*") LinkedHashMap<String, String> linkedHashMapProperty;
 	}
 
 	public static class BeanWithOverlappingWildcards {
 
-		@Field("*_key_s")
-		Map<String, String> keys;
+		@Field("*_key_s") Map<String, String> keys;
 
-		@Field("*_s")
-		Map<String, String> strings;
+		@Field("*_s") Map<String, String> strings;
 
-		@Field("acme_s_com")
-		String justAString;
+		@Field("acme_s_com") String justAString;
 
-		@Field("_s*")
-		String stringWithPrefix;
+		@Field("_s*") String stringWithPrefix;
 
+	}
+
+	public static class BeanWithArrayConstructor {
+
+		@Field("array") String[] fields;
+
+		public BeanWithArrayConstructor(String[] fields) {
+			this.fields = fields;
+		}
+
+	}
+
+	@org.springframework.data.solr.core.mapping.SolrDocument(boost = 0.5f)
+	public static class BeanWithBoost {
+
+		@Indexed(boost = 0.5f) String boostedRegularField;
+
+		@Indexed(name = "*_boostedMapWildcardField", boost = 0.5f) Map<String, String> boostedMapWildcardField;
+
+		@Indexed String regularField;
+
+		@Indexed(name = "*_mapWildcardField") Map<String, String> mapWildcardField;
 	}
 
 }
